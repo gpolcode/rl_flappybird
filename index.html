@@ -15,7 +15,7 @@
         padding: 0;
         width: 100%;
         height: 100%;
-        background: #222;
+        background: #4ec0ca; /* Fallback matching the sky asset */
         overflow: hidden;
         font-family: "Courier New", Courier, monospace;
       }
@@ -24,9 +24,8 @@
         display: block;
         width: 100vw;
         height: 100vh;
-        object-fit: contain;
-        background: #000;
-        image-rendering: pixelated; /* Keeps pixel art sharp on large displays */
+        /* object-fit removed to natively map 1:1 to the dynamic height calculation */
+        image-rendering: pixelated;
       }
 
       #loader {
@@ -37,8 +36,8 @@
         color: white;
         font-size: 24px;
         font-weight: bold;
-        pointer-events: none;
         text-shadow: 2px 2px 0 #000;
+        pointer-events: none;
       }
     </style>
   </head>
@@ -51,24 +50,34 @@
       const ctx = canvas.getContext("2d");
       const loader = document.getElementById("loader");
 
-      // --- SYSTEM ENGINE CONSTANTS ---
+      // --- VIEWPORT DECOUPLING ---
       const BACKEND_WIDTH = 288;
-      const BACKEND_HEIGHT = 512;
-      const GRAVITY = 0.4;
-      const FLAP_IMPULSE = -7.0;
-      const PIPE_SPEED = 3.0;
+      const LOGICAL_HEIGHT = 512; // Strictly preserved for the ONNX state inputs
+
+      // Calculate actual device aspect ratio to expand the visual canvas downward
+      const screenRatio = window.innerHeight / window.innerWidth;
+      const VISUAL_HEIGHT = Math.max(
+        LOGICAL_HEIGHT,
+        BACKEND_WIDTH * screenRatio
+      );
+
+      const RESOLUTION_SCALE = 4;
+      canvas.width = BACKEND_WIDTH * RESOLUTION_SCALE;
+      canvas.height = VISUAL_HEIGHT * RESOLUTION_SCALE;
+      ctx.scale(RESOLUTION_SCALE, RESOLUTION_SCALE);
+      ctx.imageSmoothingEnabled = false;
+
+      // --- EXACT GYMNASIUM PHYSICS CONSTANTS ---
+      const GRAVITY = 1.0;
+      const FLAP_IMPULSE = -8.0;
+      const MAX_VELOCITY = 10.0;
+      const PIPE_SPEED = 4.0;
+      const PIPE_SPAWN_DIST = 144;
       const GAP_SIZE = 100;
       const PIPE_WIDTH = 52;
       const BIRD_X = 57;
 
-      // --- HIGH-DPI SHARPNESS FIX ---
-      const RESOLUTION_SCALE = 4;
-      canvas.width = BACKEND_WIDTH * RESOLUTION_SCALE;
-      canvas.height = BACKEND_HEIGHT * RESOLUTION_SCALE;
-      ctx.scale(RESOLUTION_SCALE, RESOLUTION_SCALE);
-      ctx.imageSmoothingEnabled = false;
-
-      // --- ASSET LOADING (WITH ANIMATION CYCLES) ---
+      // --- ASSET LOADING ---
       const bgImg = new Image();
       bgImg.src = "assets/background-day.png";
       const pipeImg = new Image();
@@ -76,7 +85,6 @@
       const baseImg = new Image();
       baseImg.src = "assets/base.png";
 
-      // Helper to load the 4-step animation sequence for a specific color
       function loadBirdFrames(color) {
         const down = new Image();
         down.src = `assets/${color}bird-downflap.png`;
@@ -84,14 +92,14 @@
         mid.src = `assets/${color}bird-midflap.png`;
         const up = new Image();
         up.src = `assets/${color}bird-upflap.png`;
-        return [down, mid, up, mid]; // Natural cycle: Down -> Mid -> Up -> Mid
+        return [down, mid, up, mid];
       }
 
       const yellowBirdFrames = loadBirdFrames("yellow");
       const blueBirdFrames = loadBirdFrames("blue");
 
       let session = null;
-      let gameFrame = 0; // Universal frame counter for animations
+      let gameFrame = 0;
       let score = 0;
       let pipes = [];
       let gameState = "LOADING";
@@ -99,7 +107,6 @@
       let humanBird = { y: 240, velocity: 0, dead: false };
       let aiBird = { y: 240, velocity: 0, dead: false };
 
-      // 1. Initialize ONNX
       async function initAI() {
         try {
           session = await ort.InferenceSession.create(
@@ -122,11 +129,11 @@
         aiBird = { y: 240, velocity: 0, dead: false };
 
         spawnPipePair(BACKEND_WIDTH + 100);
-        spawnPipePair(BACKEND_WIDTH + 100 + BACKEND_WIDTH / 2 + PIPE_WIDTH / 2);
       }
 
       function spawnPipePair(startX) {
-        let topHeight = Math.random() * (BACKEND_HEIGHT - GAP_SIZE - 160) + 60;
+        // Spawns bounded strictly to the logical 512 constraint
+        let topHeight = Math.random() * (LOGICAL_HEIGHT - GAP_SIZE - 160) + 60;
         pipes.push({
           x: startX,
           top: topHeight,
@@ -135,123 +142,126 @@
         });
       }
 
-      // 2. The Core Execution Loop
       async function gameLoop() {
-        ctx.clearRect(0, 0, BACKEND_WIDTH, BACKEND_HEIGHT);
-        ctx.drawImage(bgImg, 0, 0, BACKEND_WIDTH, BACKEND_HEIGHT);
+        ctx.clearRect(0, 0, BACKEND_WIDTH, VISUAL_HEIGHT);
 
-        // Global animation progression (unless both birds are dead)
-        if (gameState !== "GAMEOVER") {
-          gameFrame++;
-        }
+        // Anchor sky background to Y=0
+        ctx.drawImage(bgImg, 0, 0, BACKEND_WIDTH, LOGICAL_HEIGHT);
 
         if (gameState === "PLAYING") {
-          // Update Physics
-          if (!humanBird.dead) {
-            humanBird.velocity += GRAVITY;
-            humanBird.y += humanBird.velocity;
-            checkCollision(humanBird);
-          }
-          if (!aiBird.dead) {
-            aiBird.velocity += GRAVITY;
-            aiBird.y += aiBird.velocity;
-            checkCollision(aiBird);
-          }
+          let anyAlive = !humanBird.dead || !aiBird.dead;
 
-          // Move Pipes & Score Tracking
-          pipes.forEach((p) => {
-            p.x -= PIPE_SPEED;
-            if (!p.passed && p.x + PIPE_WIDTH < BIRD_X) {
-              p.passed = true;
-              score++;
+          [humanBird, aiBird].forEach((bird) => {
+            if (!bird.dead) {
+              bird.velocity += GRAVITY;
+              if (bird.velocity > MAX_VELOCITY) bird.velocity = MAX_VELOCITY;
+              bird.y += bird.velocity;
+              checkCollision(bird);
+            } else if (bird.y < LOGICAL_HEIGHT - 50 - 12) {
+              bird.velocity += GRAVITY;
+              if (bird.velocity > MAX_VELOCITY) bird.velocity = MAX_VELOCITY;
+              bird.y += bird.velocity;
+              if (bird.y > LOGICAL_HEIGHT - 50 - 12)
+                bird.y = LOGICAL_HEIGHT - 50 - 12;
             }
           });
 
-          // Pipe Cleanup & Spawning
-          if (pipes.length > 0 && pipes[0].x < -PIPE_WIDTH) {
-            pipes.shift();
-            spawnPipePair(pipes[pipes.length - 1].x + 180);
-          }
+          if (anyAlive) {
+            pipes.forEach((p) => {
+              p.x -= PIPE_SPEED;
+              if (!p.passed && p.x + PIPE_WIDTH < BIRD_X) {
+                p.passed = true;
+                score++;
+              }
+            });
 
-          // --- AI INFERENCE ENGINE ---
-          if (!aiBird.dead && session) {
-            let pastPipes = pipes.filter((p) => p.x + PIPE_WIDTH <= BIRD_X);
-            let futurePipes = pipes.filter((p) => p.x + PIPE_WIDTH > BIRD_X);
-
-            let lastP = pastPipes[pastPipes.length - 1] || {
-              x: -200,
-              top: 0,
-              bottom: BACKEND_HEIGHT
-            };
-            let nextP = futurePipes[0] || {
-              x: BACKEND_WIDTH,
-              top: 0,
-              bottom: BACKEND_HEIGHT
-            };
-            let next2P = futurePipes[1] || {
-              x: BACKEND_WIDTH + 200,
-              top: 0,
-              bottom: BACKEND_HEIGHT
-            };
-
-            let state12D = [
-              lastP.x,
-              lastP.top,
-              lastP.bottom,
-              nextP.x,
-              nextP.top,
-              nextP.bottom,
-              next2P.x,
-              next2P.top,
-              next2P.bottom,
-              aiBird.y,
-              aiBird.velocity,
-              0.0
-            ];
-
-            const inputTensor = new ort.Tensor(
-              "float32",
-              Float32Array.from(state12D),
-              [1, 12]
-            );
-            const outputMap = await session.run({ input: inputTensor });
-            const qValues = outputMap.output.data;
-
-            if (qValues[1] > qValues[0]) {
-              aiBird.velocity = FLAP_IMPULSE;
+            if (pipes.length > 0 && pipes[0].x < -PIPE_WIDTH) {
+              pipes.shift();
             }
-          }
 
-          if (humanBird.dead && aiBird.dead) {
-            gameState = "GAMEOVER";
+            if (pipes.length > 0) {
+              let lastPipe = pipes[pipes.length - 1];
+              if (lastPipe.x < BACKEND_WIDTH) {
+                spawnPipePair(lastPipe.x + PIPE_SPAWN_DIST);
+              }
+            }
+
+            gameFrame++;
+
+            if (!aiBird.dead && session) {
+              let pastPipes = pipes.filter((p) => p.x + PIPE_WIDTH <= BIRD_X);
+              let futurePipes = pipes.filter((p) => p.x + PIPE_WIDTH > BIRD_X);
+
+              let lastP = pastPipes[pastPipes.length - 1] || {
+                x: -200,
+                top: 0,
+                bottom: LOGICAL_HEIGHT
+              };
+              let nextP = futurePipes[0] || {
+                x: BACKEND_WIDTH,
+                top: 0,
+                bottom: LOGICAL_HEIGHT
+              };
+              let next2P = futurePipes[1] || {
+                x: BACKEND_WIDTH + 200,
+                top: 0,
+                bottom: LOGICAL_HEIGHT
+              };
+
+              let state12D = [
+                lastP.x,
+                lastP.top,
+                lastP.bottom,
+                nextP.x,
+                nextP.top,
+                nextP.bottom,
+                next2P.x,
+                next2P.top,
+                next2P.bottom,
+                aiBird.y,
+                aiBird.velocity,
+                0.0
+              ];
+
+              const inputTensor = new ort.Tensor(
+                "float32",
+                Float32Array.from(state12D),
+                [1, 12]
+              );
+              const outputMap = await session.run({ input: inputTensor });
+              const qValues = outputMap.output.data;
+
+              if (qValues[1] > qValues[0]) {
+                aiBird.velocity = FLAP_IMPULSE;
+              }
+            }
           }
         }
 
-        // --- GRAPHICAL RENDERING ---
         drawPipes();
 
-        // Smooth scrolling floor effect
+        let anyAlive = !humanBird.dead || !aiBird.dead;
         let baseOffset =
-          gameState !== "GAMEOVER" ? -(gameFrame * PIPE_SPEED) % 24 : 0;
-        ctx.drawImage(
-          baseImg,
-          baseOffset,
-          BACKEND_HEIGHT - 50,
-          BACKEND_WIDTH + 24,
-          112
-        );
+          gameState === "PLAYING" && anyAlive
+            ? -(gameFrame * PIPE_SPEED) % 24
+            : 0;
 
-        // Calculate hover offsets and wing animations
+        // Procedurally tile the base texture downwards to fill extreme aspect ratios
+        for (let y = LOGICAL_HEIGHT - 50; y < VISUAL_HEIGHT; y += 112) {
+          ctx.drawImage(baseImg, baseOffset, y, BACKEND_WIDTH + 24, 112);
+        }
+
         let hoverY = gameState === "START" ? Math.sin(gameFrame * 0.1) * 6 : 0;
-        // Change animation frame every 5 game loops. Freeze on Midflap (1) if dead.
         let flapIndex = Math.floor(gameFrame / 5) % 4;
 
-        // Render AI Bird (Blue / Ghosted)
-        if (!aiBird.dead) {
-          let frameIndex = gameState === "GAMEOVER" ? 1 : flapIndex;
-          ctx.globalAlpha = 0.5; // Transparent
+        if (aiBird.y < LOGICAL_HEIGHT - 50 - 12 || !aiBird.dead) {
+          let f =
+            aiBird.dead || (gameState !== "PLAYING" && gameState !== "START")
+              ? 1
+              : flapIndex;
+          ctx.globalAlpha = 0.5;
           drawSprite(
-            blueBirdFrames[frameIndex],
+            blueBirdFrames[f],
             BIRD_X,
             aiBird.y + hoverY,
             aiBird.velocity
@@ -259,11 +269,13 @@
           ctx.globalAlpha = 1.0;
         }
 
-        // Render Human Bird (Yellow / Solid)
-        if (!humanBird.dead) {
-          let frameIndex = gameState === "GAMEOVER" ? 1 : flapIndex;
+        if (humanBird.y < LOGICAL_HEIGHT - 50 - 12 || !humanBird.dead) {
+          let f =
+            humanBird.dead || (gameState !== "PLAYING" && gameState !== "START")
+              ? 1
+              : flapIndex;
           drawSprite(
-            yellowBirdFrames[frameIndex],
+            yellowBirdFrames[f],
             BIRD_X,
             humanBird.y + hoverY,
             humanBird.velocity
@@ -271,15 +283,12 @@
         }
 
         drawUI();
-
         requestAnimationFrame(gameLoop);
       }
 
-      // --- SUBROUTINES ---
       function drawSprite(img, x, y, velocity) {
         ctx.save();
         ctx.translate(x, y);
-        // Dynamic tilt based on velocity. If in START screen (velocity 0), remains flat.
         let rotation =
           gameState === "START"
             ? 0
@@ -301,7 +310,7 @@
       }
 
       function checkCollision(bird) {
-        if (bird.y > BACKEND_HEIGHT - 50 - 12 || bird.y < 0) {
+        if (bird.y > LOGICAL_HEIGHT - 50 - 12 || bird.y < 0) {
           bird.dead = true;
           return;
         }
@@ -327,7 +336,6 @@
           ctx.fillText("TAP TO START", BACKEND_WIDTH / 2, 140);
 
           ctx.fillStyle = "#64b5f6";
-          ctx.strokeStyle = "black";
           ctx.lineWidth = 3;
           ctx.font = "bold 16px sans-serif";
           ctx.strokeText("Blue Bird = AI Bot", BACKEND_WIDTH / 2, 185);
@@ -339,21 +347,16 @@
           ctx.font = "bold 40px sans-serif";
           ctx.strokeText(score, BACKEND_WIDTH / 2, 80);
           ctx.fillText(score, BACKEND_WIDTH / 2, 80);
-        } else if (gameState === "GAMEOVER") {
-          ctx.fillStyle = "white";
-          ctx.strokeStyle = "black";
-          ctx.lineWidth = 4;
-          ctx.font = "bold 40px sans-serif";
-          ctx.strokeText("GAME OVER", BACKEND_WIDTH / 2, 150);
-          ctx.fillText("GAME OVER", BACKEND_WIDTH / 2, 150);
 
-          ctx.font = "bold 24px sans-serif";
-          ctx.strokeText("Score: " + score, BACKEND_WIDTH / 2, 200);
-          ctx.fillText("Score: " + score, BACKEND_WIDTH / 2, 200);
+          if (humanBird.dead) {
+            ctx.font = "bold 40px sans-serif";
+            ctx.strokeText("GAME OVER", BACKEND_WIDTH / 2, 180);
+            ctx.fillText("GAME OVER", BACKEND_WIDTH / 2, 180);
 
-          ctx.font = "bold 20px sans-serif";
-          ctx.strokeText("Tap to Restart", BACKEND_WIDTH / 2, 250);
-          ctx.fillText("Tap to Restart", BACKEND_WIDTH / 2, 250);
+            ctx.font = "bold 20px sans-serif";
+            ctx.strokeText("Tap to Restart", BACKEND_WIDTH / 2, 230);
+            ctx.fillText("Tap to Restart", BACKEND_WIDTH / 2, 230);
+          }
         }
       }
 
@@ -361,11 +364,13 @@
         if (gameState === "START") {
           gameState = "PLAYING";
           humanBird.velocity = FLAP_IMPULSE;
-        } else if (gameState === "PLAYING" && !humanBird.dead) {
-          humanBird.velocity = FLAP_IMPULSE;
-        } else if (gameState === "GAMEOVER") {
-          resetGame();
-          gameState = "START";
+        } else if (gameState === "PLAYING") {
+          if (!humanBird.dead) {
+            humanBird.velocity = FLAP_IMPULSE;
+          } else {
+            resetGame();
+            gameState = "START";
+          }
         }
       }
 
@@ -375,10 +380,14 @@
           handleInput();
         }
       });
-      canvas.addEventListener("touchstart", (e) => {
-        e.preventDefault();
-        handleInput();
-      });
+      canvas.addEventListener(
+        "touchstart",
+        (e) => {
+          e.preventDefault();
+          handleInput();
+        },
+        { passive: false }
+      );
       canvas.addEventListener("mousedown", handleInput);
 
       initAI();
