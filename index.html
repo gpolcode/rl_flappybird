@@ -15,17 +15,21 @@
         padding: 0;
         width: 100%;
         height: 100%;
-        background: #4ec0ca; /* Fallback matching the sky asset */
+        background: #4ec0ca; /* Matches the sky to hide mobile over-scroll smoothly */
+        display: flex;
+        justify-content: center;
+        align-items: center; /* Centers the game on desktop */
         overflow: hidden;
         font-family: "Courier New", Courier, monospace;
       }
 
       canvas {
         display: block;
-        width: 100vw;
-        height: 100vh;
-        /* object-fit removed to natively map 1:1 to the dynamic height calculation */
+        height: 100vh; /* Fill the screen vertically */
+        width: auto; /* Scale width proportionally */
+        max-width: 100vw; /* Prevent horizontal overflow on extremely thin devices */
         image-rendering: pixelated;
+        box-shadow: 0 0 30px rgba(0, 0, 0, 0.4); /* Arcade cabinet border effect for desktop */
       }
 
       #loader {
@@ -50,16 +54,19 @@
       const ctx = canvas.getContext("2d");
       const loader = document.getElementById("loader");
 
-      // --- VIEWPORT DECOUPLING ---
+      // --- VIEWPORT DECOUPLING (THE FIX) ---
       const BACKEND_WIDTH = 288;
-      const LOGICAL_HEIGHT = 512; // Strictly preserved for the ONNX state inputs
+      const GYM_HEIGHT = 512; // Strictly preserved for ONNX State Inputs and Physics Collision
 
-      // Calculate actual device aspect ratio to expand the visual canvas downward
-      const screenRatio = window.innerHeight / window.innerWidth;
-      const VISUAL_HEIGHT = Math.max(
-        LOGICAL_HEIGHT,
-        BACKEND_WIDTH * screenRatio
-      );
+      // Check if device is portrait (Mobile) or landscape (Desktop)
+      const isMobile = window.innerHeight > window.innerWidth;
+      // Extend the visual canvas height on mobile to fill the screen, lock to 512 on desktop
+      const VISUAL_HEIGHT = isMobile
+        ? Math.max(
+            GYM_HEIGHT,
+            BACKEND_WIDTH * (window.innerHeight / window.innerWidth)
+          )
+        : GYM_HEIGHT;
 
       const RESOLUTION_SCALE = 4;
       canvas.width = BACKEND_WIDTH * RESOLUTION_SCALE;
@@ -69,8 +76,9 @@
 
       // --- EXACT GYMNASIUM PHYSICS CONSTANTS ---
       const GRAVITY = 1.0;
-      const FLAP_IMPULSE = -8.0;
+      const FLAP_IMPULSE = -9.0;
       const MAX_VELOCITY = 10.0;
+      const MIN_VELOCITY = -8.0;
       const PIPE_SPEED = 4.0;
       const PIPE_SPAWN_DIST = 144;
       const GAP_SIZE = 100;
@@ -127,13 +135,11 @@
         pipes = [];
         humanBird = { y: 240, velocity: 0, dead: false };
         aiBird = { y: 240, velocity: 0, dead: false };
-
         spawnPipePair(BACKEND_WIDTH + 100);
       }
 
       function spawnPipePair(startX) {
-        // Spawns bounded strictly to the logical 512 constraint
-        let topHeight = Math.random() * (LOGICAL_HEIGHT - GAP_SIZE - 160) + 60;
+        let topHeight = Math.random() * (GYM_HEIGHT - GAP_SIZE - 160) + 60;
         pipes.push({
           x: startX,
           top: topHeight,
@@ -144,9 +150,8 @@
 
       async function gameLoop() {
         ctx.clearRect(0, 0, BACKEND_WIDTH, VISUAL_HEIGHT);
-
-        // Anchor sky background to Y=0
-        ctx.drawImage(bgImg, 0, 0, BACKEND_WIDTH, LOGICAL_HEIGHT);
+        // Draw sky anchored to the top
+        ctx.drawImage(bgImg, 0, 0, BACKEND_WIDTH, GYM_HEIGHT);
 
         if (gameState === "PLAYING") {
           let anyAlive = !humanBird.dead || !aiBird.dead;
@@ -155,14 +160,14 @@
             if (!bird.dead) {
               bird.velocity += GRAVITY;
               if (bird.velocity > MAX_VELOCITY) bird.velocity = MAX_VELOCITY;
+              if (bird.velocity < MIN_VELOCITY) bird.velocity = MIN_VELOCITY;
               bird.y += bird.velocity;
               checkCollision(bird);
-            } else if (bird.y < LOGICAL_HEIGHT - 50 - 12) {
+            } else if (bird.y < GYM_HEIGHT - 50 - 12) {
               bird.velocity += GRAVITY;
               if (bird.velocity > MAX_VELOCITY) bird.velocity = MAX_VELOCITY;
               bird.y += bird.velocity;
-              if (bird.y > LOGICAL_HEIGHT - 50 - 12)
-                bird.y = LOGICAL_HEIGHT - 50 - 12;
+              if (bird.y > GYM_HEIGHT - 50 - 12) bird.y = GYM_HEIGHT - 50 - 12;
             }
           });
 
@@ -195,17 +200,17 @@
               let lastP = pastPipes[pastPipes.length - 1] || {
                 x: -200,
                 top: 0,
-                bottom: LOGICAL_HEIGHT
+                bottom: GYM_HEIGHT
               };
               let nextP = futurePipes[0] || {
                 x: BACKEND_WIDTH,
                 top: 0,
-                bottom: LOGICAL_HEIGHT
+                bottom: GYM_HEIGHT
               };
               let next2P = futurePipes[1] || {
                 x: BACKEND_WIDTH + 200,
                 top: 0,
-                bottom: LOGICAL_HEIGHT
+                bottom: GYM_HEIGHT
               };
 
               let state12D = [
@@ -246,15 +251,15 @@
             ? -(gameFrame * PIPE_SPEED) % 24
             : 0;
 
-        // Procedurally tile the base texture downwards to fill extreme aspect ratios
-        for (let y = LOGICAL_HEIGHT - 50; y < VISUAL_HEIGHT; y += 112) {
+        // Draw the primary collision floor where physics expect it, then tile downwards for tall screens
+        for (let y = GYM_HEIGHT - 50; y < VISUAL_HEIGHT + 112; y += 112) {
           ctx.drawImage(baseImg, baseOffset, y, BACKEND_WIDTH + 24, 112);
         }
 
         let hoverY = gameState === "START" ? Math.sin(gameFrame * 0.1) * 6 : 0;
         let flapIndex = Math.floor(gameFrame / 5) % 4;
 
-        if (aiBird.y < LOGICAL_HEIGHT - 50 - 12 || !aiBird.dead) {
+        if (aiBird.y < GYM_HEIGHT - 50 - 12 || !aiBird.dead) {
           let f =
             aiBird.dead || (gameState !== "PLAYING" && gameState !== "START")
               ? 1
@@ -269,7 +274,7 @@
           ctx.globalAlpha = 1.0;
         }
 
-        if (humanBird.y < LOGICAL_HEIGHT - 50 - 12 || !humanBird.dead) {
+        if (humanBird.y < GYM_HEIGHT - 50 - 12 || !humanBird.dead) {
           let f =
             humanBird.dead || (gameState !== "PLAYING" && gameState !== "START")
               ? 1
@@ -310,7 +315,7 @@
       }
 
       function checkCollision(bird) {
-        if (bird.y > LOGICAL_HEIGHT - 50 - 12 || bird.y < 0) {
+        if (bird.y > GYM_HEIGHT - 50 - 12 || bird.y < 0) {
           bird.dead = true;
           return;
         }
