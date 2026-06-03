@@ -1,549 +1,407 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta
-      name="viewport"
-      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
-    />
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Hackathon: Human vs Trained RL Agent</title>
     <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js"></script>
     <style>
-      html,
-      body {
-        margin: 0;
-        padding: 0;
-        width: 100%;
-        height: 100%;
-        background: #4ec0ca;
-        display: flex;
-        justify-content: center;
-        align-items: center;
-        overflow: hidden;
-        font-family: "Courier New", Courier, monospace;
-      }
+        html, body {
+            margin: 0; padding: 0; width: 100%; height: 100%; 
+            background: #4ec0ca; display: flex; justify-content: center; align-items: center; 
+            overflow: hidden; font-family: 'Courier New', Courier, monospace;
+        }
+        
+        canvas {
+            display: block; height: 100vh; width: auto; max-width: 100vw; 
+            image-rendering: pixelated; box-shadow: 0 0 30px rgba(0,0,0,0.4);
+        }
 
-      canvas {
-        display: block;
-        height: 100vh;
-        width: auto;
-        max-width: 100vw;
-        image-rendering: pixelated;
-        box-shadow: 0 0 30px rgba(0, 0, 0, 0.4);
-      }
+        #loader {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            color: white; font-size: 24px; font-weight: bold; text-shadow: 2px 2px 0 #000; pointer-events: none;
+        }
 
-      #loader {
-        position: absolute;
-        top: 50%;
-        left: 50%;
-        transform: translate(-50%, -50%);
-        color: white;
-        font-size: 24px;
-        font-weight: bold;
-        text-shadow: 2px 2px 0 #000;
-        pointer-events: none;
-      }
+        #uiContainer {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            color: white;
+            font-size: 16px;
+            font-family: sans-serif;
+            font-weight: bold;
+            text-shadow: 
+                -1px -1px 0 #000,  
+                 1px -1px 0 #000,
+                -1px  1px 0 #000,
+                 1px  1px 0 #000,
+                 2px  2px 0 #000; 
+            z-index: 100;
+            user-select: none;
+        }
 
-      #uiContainer {
-        position: absolute;
-        bottom: 20px;
-        left: 20px;
-        color: white;
-        font-size: 16px;
-        font-family: sans-serif;
-        font-weight: bold;
-        /* Outer stroke simulated with shadow to prevent inward bleeding */
-        text-shadow:
-          -1px -1px 0 #000,
-          1px -1px 0 #000,
-          -1px 1px 0 #000,
-          1px 1px 0 #000,
-          2px 2px 0 #000;
-        z-index: 100;
-        user-select: none;
-      }
+        #uiContainer label {
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
 
-      #uiContainer label {
-        cursor: pointer;
-        display: flex;
-        align-items: center;
-        gap: 8px;
-      }
-
-      #uiContainer input {
-        cursor: pointer;
-        width: 18px;
-        height: 18px;
-        margin: 0;
-        accent-color: #64b5f6;
-        outline: 1px solid black;
-      }
+        #uiContainer input {
+            cursor: pointer;
+            width: 18px;
+            height: 18px;
+            margin: 0;
+            accent-color: #64b5f6; 
+            outline: 1px solid black; 
+        }
     </style>
-  </head>
-  <body>
-    <div id="loader">Loading RL Brain...</div>
+</head>
+<body>
 
+    <div id="loader">Loading RL Brain...</div>
+    
     <div id="uiContainer">
-      <label> <input type="checkbox" id="aiToggle" /> Show AI Bot </label>
+        <label>
+            <input type="checkbox" id="aiToggle"> Show AI Bot
+        </label>
     </div>
 
     <canvas id="gameCanvas"></canvas>
 
-    <script>
-      const canvas = document.getElementById("gameCanvas");
-      const ctx = canvas.getContext("2d");
-      const loader = document.getElementById("loader");
-      const aiToggle = document.getElementById("aiToggle");
+<script>
+const canvas = document.getElementById("gameCanvas");
+const ctx = canvas.getContext("2d");
+const loader = document.getElementById("loader");
+const aiToggle = document.getElementById("aiToggle");
 
-      // --- HARDWARE DETECTION ---
-      const isMobile = window.innerHeight > window.innerWidth;
-      const hasTouch = "ontouchstart" in window || navigator.maxTouchPoints > 0;
-      const ACTION_TEXT = hasTouch ? "TAP" : "SPACE";
+// --- HARDWARE DETECTION ---
+const isMobile = window.innerHeight > window.innerWidth;
+const hasTouch = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+const ACTION_TEXT = hasTouch ? "TAP" : "SPACE";
 
-      // --- STATE PERSISTENCE ---
-      const savedToggle = localStorage.getItem("showAiBot");
-      if (savedToggle !== null) {
-        aiToggle.checked = savedToggle === "true";
-      } else {
-        aiToggle.checked = false;
-      }
+// --- STATE PERSISTENCE ---
+const savedToggle = localStorage.getItem("showAiBot");
+if (savedToggle !== null) {
+    aiToggle.checked = savedToggle === "true";
+} else {
+    aiToggle.checked = false;
+}
 
-      aiToggle.addEventListener("change", (e) => {
-        localStorage.setItem("showAiBot", e.target.checked);
-      });
+aiToggle.addEventListener("change", (e) => {
+    localStorage.setItem("showAiBot", e.target.checked);
+});
 
-      // --- VIEWPORT DECOUPLING ---
-      const BACKEND_WIDTH = 288;
-      const GYM_HEIGHT = 512;
-      const VISUAL_HEIGHT = isMobile
-        ? Math.max(
-            GYM_HEIGHT,
-            BACKEND_WIDTH * (window.innerHeight / window.innerWidth)
-          )
-        : GYM_HEIGHT;
+// --- VIEWPORT DECOUPLING ---
+const BACKEND_WIDTH = 288;
+const GYM_HEIGHT = 512; 
+const VISUAL_HEIGHT = isMobile ? Math.max(GYM_HEIGHT, BACKEND_WIDTH * (window.innerHeight / window.innerWidth)) : GYM_HEIGHT;
 
-      const RESOLUTION_SCALE = 4;
-      canvas.width = BACKEND_WIDTH * RESOLUTION_SCALE;
-      canvas.height = VISUAL_HEIGHT * RESOLUTION_SCALE;
-      ctx.scale(RESOLUTION_SCALE, RESOLUTION_SCALE);
-      ctx.imageSmoothingEnabled = false;
+const RESOLUTION_SCALE = 4;
+canvas.width = BACKEND_WIDTH * RESOLUTION_SCALE;
+canvas.height = VISUAL_HEIGHT * RESOLUTION_SCALE;
+ctx.scale(RESOLUTION_SCALE, RESOLUTION_SCALE);
+ctx.imageSmoothingEnabled = false; 
 
-      // --- ENGINE LOCKER (60 FPS FIXED TIME STEP) ---
-      const FPS = 30;
-      const fpsInterval = 1000 / FPS;
-      let lastTime = 0;
-      let isUpdating = false;
+// --- ENGINE LOCKER (30 FPS FIXED TIME STEP) ---
+const FPS = 30;
+const fpsInterval = 1000 / FPS;
+let lastTime = 0;
+let isUpdating = false;
 
-      // --- EXACT GYMNASIUM CONSTANTS ---
-      const GRAVITY = 1.0;
-      const FLAP_IMPULSE = -9.0;
-      const MAX_VELOCITY = 10.0;
-      const PIPE_SPEED = 4.0;
-      const GAP_SIZE = 100;
-      const PIPE_WIDTH = 52;
-      const PIPE_HEIGHT = 320;
-      const PLAYER_WIDTH = 34;
-      const PLAYER_HEIGHT = 24;
-      const BIRD_X = 57;
+// --- HOLD-TO-RESTART MECHANIC ---
+let isRestartPressing = false;
+let restartPressTime = 0;
 
-      // --- ASSET LOADING ---
-      const bgImg = new Image();
-      bgImg.src = "assets/background-day.png";
-      const pipeImg = new Image();
-      pipeImg.src = "assets/pipe-green.png";
-      const baseImg = new Image();
-      baseImg.src = "assets/base.png";
+// --- EXACT GYMNASIUM CONSTANTS ---
+const GRAVITY = 1.0;
+const FLAP_IMPULSE = -9.0;
+const MAX_VELOCITY = 10.0;
+const PIPE_SPEED = 4.0;
+const GAP_SIZE = 100;
+const PIPE_WIDTH = 52;
+const PIPE_HEIGHT = 320;
+const PLAYER_WIDTH = 34;
+const PLAYER_HEIGHT = 24;
+const BIRD_X = 57;
 
-      function loadBirdFrames(color) {
-        const down = new Image();
-        down.src = `assets/${color}bird-downflap.png`;
-        const mid = new Image();
-        mid.src = `assets/${color}bird-midflap.png`;
-        const up = new Image();
-        up.src = `assets/${color}bird-upflap.png`;
-        return [down, mid, up, mid];
-      }
+// --- ASSET LOADING ---
+const bgImg = new Image(); bgImg.src = "assets/background-day.png";
+const pipeImg = new Image(); pipeImg.src = "assets/pipe-green.png";
+const baseImg = new Image(); baseImg.src = "assets/base.png";
 
-      const yellowBirdFrames = loadBirdFrames("yellow");
-      const blueBirdFrames = loadBirdFrames("blue");
+function loadBirdFrames(color) {
+    const down = new Image(); down.src = `assets/${color}bird-downflap.png`;
+    const mid = new Image(); mid.src = `assets/${color}bird-midflap.png`;
+    const up = new Image(); up.src = `assets/${color}bird-upflap.png`;
+    return [down, mid, up, mid];
+}
 
-      let session = null;
-      let gameFrame = 0;
-      let gameState = "LOADING";
+const yellowBirdFrames = loadBirdFrames("yellow");
+const blueBirdFrames = loadBirdFrames("blue");
 
-      // Independent Scoreboards
-      let humanScore = 0;
-      let aiScore = 0;
+let session = null;
+let gameFrame = 0; 
+let gameState = "LOADING"; 
 
-      let humanBird = {
-        y: 244,
-        velocity: -9,
-        rot: 45,
-        flapped: false,
-        dead: false
-      };
-      let aiBird = {
-        y: 244,
-        velocity: -9,
-        rot: 45,
-        flapped: false,
-        dead: false
-      };
-      let pipes = [];
+// Independent Scoreboards
+let humanScore = 0;
+let aiScore = 0;
 
-      async function initAI() {
-        try {
-          session = await ort.InferenceSession.create(
-            "./flappy_bird_packed.onnx"
-          );
-          loader.style.display = "none";
-          gameState = "START";
-          resetGame();
-          lastTime = performance.now();
-          requestAnimationFrame(gameLoop);
-        } catch (e) {
-          loader.innerText = "Error loading flappy_bird_packed.onnx";
-          console.error(e);
-        }
-      }
+let humanBird = { y: 244, velocity: -9, rot: 45, flapped: false, dead: false };
+let aiBird    = { y: 244, velocity: -9, rot: 45, flapped: false, dead: false };
+let pipes = [];
 
-      function resetGame() {
-        humanScore = 0;
-        aiScore = 0;
-        pipes = [];
-        humanBird = {
-          y: 244,
-          velocity: -9,
-          rot: 45,
-          flapped: false,
-          dead: false
-        };
-        aiBird = { y: 244, velocity: -9, rot: 45, flapped: false, dead: false };
-
-        spawnPipePair(BACKEND_WIDTH);
-        spawnPipePair(BACKEND_WIDTH + BACKEND_WIDTH / 2);
-        spawnPipePair(BACKEND_WIDTH + BACKEND_WIDTH);
-      }
-
-      function spawnPipePair(startX) {
-        let gap_y = Math.floor(Math.random() * 8) * 10 + 20;
-        gap_y += Math.floor(GYM_HEIGHT * 0.79 * 0.2);
-
-        pipes.push({
-          x: startX,
-          top: gap_y,
-          bottom: gap_y + GAP_SIZE,
-          humanPassed: false,
-          aiPassed: false
-        });
-      }
-
-      // --- CORE EXECUTION LOOP ---
-      async function gameLoop(currentTime) {
+async function initAI() {
+    try {
+        session = await ort.InferenceSession.create('./flappy_bird_packed.onnx');
+        loader.style.display = "none";
+        gameState = "START";
+        resetGame();
+        lastTime = performance.now();
         requestAnimationFrame(gameLoop);
-        let deltaTime = currentTime - lastTime;
+    } catch (e) {
+        loader.innerText = "Error loading flappy_bird_packed.onnx";
+        console.error(e);
+    }
+}
 
-        if (deltaTime >= fpsInterval && !isUpdating) {
-          isUpdating = true;
-          lastTime = currentTime - (deltaTime % fpsInterval);
+function resetGame() {
+    humanScore = 0;
+    aiScore = 0;
+    pipes = [];
+    humanBird = { y: 244, velocity: -9, rot: 45, flapped: false, dead: false };
+    aiBird    = { y: 244, velocity: -9, rot: 45, flapped: false, dead: false };
+    
+    spawnPipePair(BACKEND_WIDTH);
+    spawnPipePair(BACKEND_WIDTH + (BACKEND_WIDTH / 2));
+    spawnPipePair(BACKEND_WIDTH + BACKEND_WIDTH);
+}
 
-          // -- START PHYSICS UPDATE --
-          ctx.clearRect(0, 0, BACKEND_WIDTH, VISUAL_HEIGHT);
-          ctx.drawImage(bgImg, 0, 0, BACKEND_WIDTH, GYM_HEIGHT);
+function spawnPipePair(startX) {
+    let gap_y = Math.floor(Math.random() * 8) * 10 + 20; 
+    gap_y += Math.floor((GYM_HEIGHT * 0.79) * 0.2);
+    
+    pipes.push({ 
+        x: startX, top: gap_y, bottom: gap_y + GAP_SIZE, 
+        humanPassed: false, aiPassed: false
+    });
+}
 
-          if (gameState === "PLAYING") {
+// --- CORE EXECUTION LOOP ---
+async function gameLoop(currentTime) {
+    requestAnimationFrame(gameLoop);
+    let deltaTime = currentTime - lastTime;
+
+    if (deltaTime >= fpsInterval && !isUpdating) {
+        isUpdating = true;
+        lastTime = currentTime - (deltaTime % fpsInterval);
+
+        // Track the 0.5s restart delay dynamically
+        if (gameState === "PLAYING" && humanBird.dead && isRestartPressing) {
+            if (performance.now() - restartPressTime >= 500) {
+                isRestartPressing = false;
+                resetGame();
+                gameState = "START";
+            }
+        }
+
+        // -- START PHYSICS UPDATE --
+        ctx.clearRect(0, 0, BACKEND_WIDTH, VISUAL_HEIGHT);
+        ctx.drawImage(bgImg, 0, 0, BACKEND_WIDTH, GYM_HEIGHT);
+
+        if (gameState === "PLAYING") {
             let anyAlive = !humanBird.dead || !aiBird.dead;
 
-            [humanBird, aiBird].forEach((bird) => {
-              if (!bird.dead) {
-                if (bird.flapped) {
-                  bird.velocity = FLAP_IMPULSE;
-                  bird.flapped = false;
-                  bird.rot = 45;
-                } else if (bird.velocity < MAX_VELOCITY) {
-                  bird.velocity += GRAVITY;
+            [humanBird, aiBird].forEach(bird => {
+                if (!bird.dead) {
+                    if (bird.flapped) {
+                        bird.velocity = FLAP_IMPULSE;
+                        bird.flapped = false;
+                        bird.rot = 45;
+                    } else if (bird.velocity < MAX_VELOCITY) {
+                        bird.velocity += GRAVITY;
+                    }
+                    if (bird.rot > -90) bird.rot -= 3;
+                    
+                    bird.y += bird.velocity;
+                    checkCollision(bird);
+                } else if (bird.y < (GYM_HEIGHT * 0.79) - PLAYER_HEIGHT) {
+                    bird.velocity += GRAVITY;
+                    if (bird.velocity > MAX_VELOCITY) bird.velocity = MAX_VELOCITY;
+                    bird.y += bird.velocity;
+                    if (bird.rot > -90) bird.rot -= 3;
+                    if (bird.y > (GYM_HEIGHT * 0.79) - PLAYER_HEIGHT) bird.y = (GYM_HEIGHT * 0.79) - PLAYER_HEIGHT;
                 }
-                if (bird.rot > -90) bird.rot -= 3;
-
-                bird.y += bird.velocity;
-                checkCollision(bird);
-              } else if (bird.y < GYM_HEIGHT * 0.79 - PLAYER_HEIGHT) {
-                bird.velocity += GRAVITY;
-                if (bird.velocity > MAX_VELOCITY) bird.velocity = MAX_VELOCITY;
-                bird.y += bird.velocity;
-                if (bird.rot > -90) bird.rot -= 3;
-                if (bird.y > GYM_HEIGHT * 0.79 - PLAYER_HEIGHT)
-                  bird.y = GYM_HEIGHT * 0.79 - PLAYER_HEIGHT;
-              }
             });
 
             if (anyAlive) {
-              pipes.forEach((p) => {
-                p.x -= PIPE_SPEED;
-
-                if (
-                  !p.humanPassed &&
-                  !humanBird.dead &&
-                  p.x + PIPE_WIDTH < BIRD_X + PLAYER_WIDTH / 2
-                ) {
-                  p.humanPassed = true;
-                  humanScore++;
-                }
-                if (
-                  !p.aiPassed &&
-                  !aiBird.dead &&
-                  p.x + PIPE_WIDTH < BIRD_X + PLAYER_WIDTH / 2
-                ) {
-                  p.aiPassed = true;
-                  aiScore++;
-                }
-              });
-
-              for (let i = 0; i < pipes.length; i++) {
-                if (pipes[i].x < -PIPE_WIDTH) {
-                  let gap_y = Math.floor(Math.random() * 8) * 10 + 20;
-                  gap_y += Math.floor(GYM_HEIGHT * 0.79 * 0.2);
-
-                  pipes[i].x = BACKEND_WIDTH + PIPE_WIDTH + BACKEND_WIDTH * 0.2;
-                  pipes[i].top = gap_y;
-                  pipes[i].bottom = gap_y + GAP_SIZE;
-                  pipes[i].humanPassed = false;
-                  pipes[i].aiPassed = false;
-                }
-              }
-
-              gameFrame++;
-
-              if (!aiBird.dead && session) {
-                let obsPipes = pipes.map((p) => {
-                  if (p.x > BACKEND_WIDTH) {
-                    return { x: BACKEND_WIDTH, top: 0, bottom: GYM_HEIGHT };
-                  } else {
-                    return { x: p.x, top: p.top, bottom: p.bottom };
-                  }
+                pipes.forEach(p => {
+                    p.x -= PIPE_SPEED;
+                    
+                    if (!p.humanPassed && !humanBird.dead && p.x + PIPE_WIDTH < BIRD_X + PLAYER_WIDTH / 2) {
+                        p.humanPassed = true;
+                        humanScore++;
+                    }
+                    if (!p.aiPassed && !aiBird.dead && p.x + PIPE_WIDTH < BIRD_X + PLAYER_WIDTH / 2) {
+                        p.aiPassed = true;
+                        aiScore++;
+                    }
                 });
 
-                obsPipes.sort((a, b) => a.x - b.x);
-
-                let state12D = [
-                  obsPipes[0].x / BACKEND_WIDTH,
-                  obsPipes[0].top / GYM_HEIGHT,
-                  obsPipes[0].bottom / GYM_HEIGHT,
-                  obsPipes[1].x / BACKEND_WIDTH,
-                  obsPipes[1].top / GYM_HEIGHT,
-                  obsPipes[1].bottom / GYM_HEIGHT,
-                  obsPipes[2].x / BACKEND_WIDTH,
-                  obsPipes[2].top / GYM_HEIGHT,
-                  obsPipes[2].bottom / GYM_HEIGHT,
-                  aiBird.y / GYM_HEIGHT,
-                  aiBird.velocity / MAX_VELOCITY,
-                  aiBird.rot / 90.0
-                ];
-
-                const inputTensor = new ort.Tensor(
-                  "float32",
-                  Float32Array.from(state12D),
-                  [1, 12]
-                );
-                const outputMap = await session.run({ input: inputTensor });
-
-                if (outputMap.output.data[1] > outputMap.output.data[0]) {
-                  aiBird.flapped = true;
+                for (let i = 0; i < pipes.length; i++) {
+                    if (pipes[i].x < -PIPE_WIDTH) {
+                        let gap_y = Math.floor(Math.random() * 8) * 10 + 20;
+                        gap_y += Math.floor((GYM_HEIGHT * 0.79) * 0.2);
+                        
+                        pipes[i].x = BACKEND_WIDTH + PIPE_WIDTH + (BACKEND_WIDTH * 0.2);
+                        pipes[i].top = gap_y;
+                        pipes[i].bottom = gap_y + GAP_SIZE;
+                        pipes[i].humanPassed = false;
+                        pipes[i].aiPassed = false;
+                    }
                 }
-              }
+                
+                gameFrame++;
+
+                if (!aiBird.dead && session) {
+                    let obsPipes = pipes.map(p => {
+                        if (p.x > BACKEND_WIDTH) {
+                            return { x: BACKEND_WIDTH, top: 0, bottom: GYM_HEIGHT };
+                        } else {
+                            return { x: p.x, top: p.top, bottom: p.bottom };
+                        }
+                    });
+
+                    obsPipes.sort((a, b) => a.x - b.x);
+
+                    let state12D = [
+                        obsPipes[0].x / BACKEND_WIDTH, obsPipes[0].top / GYM_HEIGHT, obsPipes[0].bottom / GYM_HEIGHT,
+                        obsPipes[1].x / BACKEND_WIDTH, obsPipes[1].top / GYM_HEIGHT, obsPipes[1].bottom / GYM_HEIGHT,
+                        obsPipes[2].x / BACKEND_WIDTH, obsPipes[2].top / GYM_HEIGHT, obsPipes[2].bottom / GYM_HEIGHT,
+                        aiBird.y / GYM_HEIGHT,
+                        aiBird.velocity / MAX_VELOCITY,
+                        aiBird.rot / 90.0
+                    ];
+
+                    const inputTensor = new ort.Tensor('float32', Float32Array.from(state12D), [1, 12]);
+                    const outputMap = await session.run({ input: inputTensor });
+                    
+                    if (outputMap.output.data[1] > outputMap.output.data[0]) {
+                        aiBird.flapped = true;
+                    }
+                }
             }
-          }
+        }
 
-          drawPipes();
+        drawPipes();
+        
+        let anyAlive = !humanBird.dead || !aiBird.dead;
+        let baseOffset = (gameState === "PLAYING" && anyAlive) ? -(gameFrame * PIPE_SPEED) % 24 : 0;
+        let groundY = GYM_HEIGHT * 0.79;
 
-          let anyAlive = !humanBird.dead || !aiBird.dead;
-          let baseOffset =
-            gameState === "PLAYING" && anyAlive
-              ? -(gameFrame * PIPE_SPEED) % 24
-              : 0;
-          let groundY = GYM_HEIGHT * 0.79;
-
-          ctx.drawImage(baseImg, baseOffset, groundY, BACKEND_WIDTH + 24, 112);
-
-          if (VISUAL_HEIGHT > groundY + 112) {
+        ctx.drawImage(baseImg, baseOffset, groundY, BACKEND_WIDTH + 24, 112);
+        
+        if (VISUAL_HEIGHT > groundY + 112) {
             ctx.fillStyle = "#ded895";
-            ctx.fillRect(
-              0,
-              groundY + 112,
-              BACKEND_WIDTH,
-              VISUAL_HEIGHT - (groundY + 112)
-            );
-          }
+            ctx.fillRect(0, groundY + 112, BACKEND_WIDTH, VISUAL_HEIGHT - (groundY + 112));
+        }
 
-          let hoverY =
-            gameState === "START" ? Math.sin(gameFrame * 0.1) * 6 : 0;
-          let flapIndex = Math.floor(gameFrame / 5) % 4;
+        let hoverY = (gameState === "START") ? Math.sin(gameFrame * 0.1) * 6 : 0;
+        let flapIndex = Math.floor(gameFrame / 5) % 4;
 
-          const shouldDrawAI = aiToggle.checked || humanBird.dead;
+        const shouldDrawAI = aiToggle.checked || humanBird.dead;
 
-          if (
-            (aiBird.y < groundY - PLAYER_HEIGHT || !aiBird.dead) &&
-            shouldDrawAI
-          ) {
-            let f =
-              aiBird.dead || (gameState !== "PLAYING" && gameState !== "START")
-                ? 1
-                : flapIndex;
-            ctx.globalAlpha = 0.5;
-            drawSprite(
-              blueBirdFrames[f],
-              BIRD_X,
-              aiBird.y + hoverY,
-              aiBird.rot
-            );
+        if ((aiBird.y < groundY - PLAYER_HEIGHT || !aiBird.dead) && shouldDrawAI) {
+            let f = (aiBird.dead || gameState !== "PLAYING" && gameState !== "START") ? 1 : flapIndex;
+            ctx.globalAlpha = 0.5; 
+            drawSprite(blueBirdFrames[f], BIRD_X, aiBird.y + hoverY, aiBird.rot);
             ctx.globalAlpha = 1.0;
-          }
-
-          if (humanBird.y < groundY - PLAYER_HEIGHT || !humanBird.dead) {
-            let f =
-              humanBird.dead ||
-              (gameState !== "PLAYING" && gameState !== "START")
-                ? 1
-                : flapIndex;
-            drawSprite(
-              yellowBirdFrames[f],
-              BIRD_X,
-              humanBird.y + hoverY,
-              humanBird.rot
-            );
-          }
-
-          drawUI();
-          // -- END PHYSICS UPDATE --
-
-          isUpdating = false;
         }
-      }
 
-      function drawSprite(img, x, y, rot) {
+        if (humanBird.y < groundY - PLAYER_HEIGHT || !humanBird.dead) {
+            let f = (humanBird.dead || gameState !== "PLAYING" && gameState !== "START") ? 1 : flapIndex;
+            drawSprite(yellowBirdFrames[f], BIRD_X, humanBird.y + hoverY, humanBird.rot);
+        }
+
+        drawUI();
+        // -- END PHYSICS UPDATE --
+
+        isUpdating = false;
+    }
+}
+
+function drawSprite(img, x, y, rot) {
+    ctx.save();
+    ctx.translate(x + PLAYER_WIDTH / 2, y + PLAYER_HEIGHT / 2);
+    let visible_rot = rot > 20 ? 20 : rot;
+    let rad = (gameState === "START") ? 0 : -(visible_rot * Math.PI / 180);
+    ctx.rotate(rad);
+    ctx.drawImage(img, -PLAYER_WIDTH / 2, -PLAYER_HEIGHT / 2, PLAYER_WIDTH, PLAYER_HEIGHT);
+    ctx.restore();
+}
+
+function drawPipes() {
+    pipes.forEach(p => {
         ctx.save();
-        ctx.translate(x + PLAYER_WIDTH / 2, y + PLAYER_HEIGHT / 2);
-        let visible_rot = rot > 20 ? 20 : rot;
-        let rad = gameState === "START" ? 0 : -((visible_rot * Math.PI) / 180);
-        ctx.rotate(rad);
-        ctx.drawImage(
-          img,
-          -PLAYER_WIDTH / 2,
-          -PLAYER_HEIGHT / 2,
-          PLAYER_WIDTH,
-          PLAYER_HEIGHT
-        );
+        ctx.translate(p.x, p.top);
+        ctx.scale(1, -1);
+        ctx.drawImage(pipeImg, 0, 0, PIPE_WIDTH, PIPE_HEIGHT);
         ctx.restore();
-      }
+        ctx.drawImage(pipeImg, p.x, p.bottom, PIPE_WIDTH, PIPE_HEIGHT);
+    });
+}
 
-      function drawPipes() {
-        pipes.forEach((p) => {
-          ctx.save();
-          ctx.translate(p.x, p.top);
-          ctx.scale(1, -1);
-          ctx.drawImage(pipeImg, 0, 0, PIPE_WIDTH, PIPE_HEIGHT);
-          ctx.restore();
-          ctx.drawImage(pipeImg, p.x, p.bottom, PIPE_WIDTH, PIPE_HEIGHT);
-        });
-      }
+function checkCollision(bird) {
+    if (bird.y + PLAYER_HEIGHT >= (GYM_HEIGHT * 0.79) - 1) { 
+        bird.dead = true; 
+        return; 
+    }
+    
+    let birdBox = { left: BIRD_X, right: BIRD_X + PLAYER_WIDTH, top: bird.y, bottom: bird.y + PLAYER_HEIGHT };
 
-      function checkCollision(bird) {
-        if (bird.y + PLAYER_HEIGHT >= GYM_HEIGHT * 0.79 - 1) {
-          bird.dead = true;
-          return;
-        }
+    for (let p of pipes) {
+        // --- OVERFLIGHT FIX ---
+        // Top boundary set to -9999 so birds flying over the screen perfectly crash into the pipe
+        let upBox  = { left: p.x, right: p.x + PIPE_WIDTH, top: -9999, bottom: p.top };
+        let lowBox = { left: p.x, right: p.x + PIPE_WIDTH, top: p.bottom, bottom: p.bottom + PIPE_HEIGHT };
 
-        let birdBox = {
-          left: BIRD_X,
-          right: BIRD_X + PLAYER_WIDTH,
-          top: bird.y,
-          bottom: bird.y + PLAYER_HEIGHT
-        };
-
-        for (let p of pipes) {
-          let upBox = {
-            left: p.x,
-            right: p.x + PIPE_WIDTH,
-            top: p.top - PIPE_HEIGHT,
-            bottom: p.top
-          };
-          let lowBox = {
-            left: p.x,
-            right: p.x + PIPE_WIDTH,
-            top: p.bottom,
-            bottom: p.bottom + PIPE_HEIGHT
-          };
-
-          if (
-            birdBox.right > upBox.left &&
-            birdBox.left < upBox.right &&
-            birdBox.bottom > upBox.top &&
-            birdBox.top < upBox.bottom
-          ) {
+        if (birdBox.right > upBox.left && birdBox.left < upBox.right && birdBox.bottom > upBox.top && birdBox.top < upBox.bottom) {
             bird.dead = true;
             return;
-          }
-          if (
-            birdBox.right > lowBox.left &&
-            birdBox.left < lowBox.right &&
-            birdBox.bottom > lowBox.top &&
-            birdBox.top < lowBox.bottom
-          ) {
+        }
+        if (birdBox.right > lowBox.left && birdBox.left < lowBox.right && birdBox.bottom > lowBox.top && birdBox.top < lowBox.bottom) {
             bird.dead = true;
             return;
-          }
         }
-      }
+    }
+}
 
-      function drawUI() {
-        ctx.textAlign = "center";
-        ctx.lineJoin = "round";
-        const maxTextWidth = BACKEND_WIDTH - 20;
+function drawUI() {
+    ctx.textAlign = "center";
+    ctx.lineJoin = "round";
+    const maxTextWidth = BACKEND_WIDTH - 20; 
 
-        if (gameState === "START") {
-          ctx.fillStyle = "white";
-          ctx.strokeStyle = "black";
-          ctx.lineWidth = 4;
-          ctx.font = "bold 30px sans-serif";
-          ctx.strokeText(
-            `${ACTION_TEXT} TO START`,
-            BACKEND_WIDTH / 2,
-            140,
-            maxTextWidth
-          );
-          ctx.fillText(
-            `${ACTION_TEXT} TO START`,
-            BACKEND_WIDTH / 2,
-            140,
-            maxTextWidth
-          );
+    if (gameState === "START") {
+        ctx.fillStyle = "white"; ctx.strokeStyle = "black"; ctx.lineWidth = 4;
+        ctx.font = "bold 30px sans-serif";
+        ctx.strokeText(`${ACTION_TEXT} TO START`, BACKEND_WIDTH / 2, 140, maxTextWidth);
+        ctx.fillText(`${ACTION_TEXT} TO START`, BACKEND_WIDTH / 2, 140, maxTextWidth);
 
-          ctx.fillStyle = "#64b5f6";
-          ctx.lineWidth = 3;
-          ctx.font = "bold 16px sans-serif";
-          ctx.strokeText(
-            "Blue Bird = AI Bot",
-            BACKEND_WIDTH / 2,
-            185,
-            maxTextWidth
-          );
-          ctx.fillText(
-            "Blue Bird = AI Bot",
-            BACKEND_WIDTH / 2,
-            185,
-            maxTextWidth
-          );
-        } else if (gameState === "PLAYING") {
-          ctx.strokeStyle = "black";
-          ctx.lineWidth = 4;
+        ctx.fillStyle = "#64b5f6"; ctx.lineWidth = 3; ctx.font = "bold 16px sans-serif";
+        ctx.strokeText("Blue Bird = AI Bot", BACKEND_WIDTH / 2, 185, maxTextWidth);
+        ctx.fillText("Blue Bird = AI Bot", BACKEND_WIDTH / 2, 185, maxTextWidth);
 
-          if (humanBird.dead) {
+    } else if (gameState === "PLAYING") {
+        ctx.strokeStyle = "black"; ctx.lineWidth = 4;
+        
+        if (humanBird.dead) {
             ctx.font = "bold 36px sans-serif";
-
+            
             ctx.fillStyle = "#ffeb3b";
             ctx.strokeText(humanScore, BACKEND_WIDTH / 3, 70);
             ctx.fillText(humanScore, BACKEND_WIDTH / 3, 70);
-
+            
             ctx.fillStyle = "#64b5f6";
             ctx.strokeText(aiScore, (BACKEND_WIDTH / 3) * 2, 70);
             ctx.fillText(aiScore, (BACKEND_WIDTH / 3) * 2, 70);
@@ -552,60 +410,89 @@
             ctx.font = "bold 40px sans-serif";
             ctx.strokeText("GAME OVER", BACKEND_WIDTH / 2, 320, maxTextWidth);
             ctx.fillText("GAME OVER", BACKEND_WIDTH / 2, 320, maxTextWidth);
-
+            
             ctx.font = "bold 20px sans-serif";
-            ctx.strokeText(
-              `${ACTION_TEXT} TO RESTART`,
-              BACKEND_WIDTH / 2,
-              370,
-              maxTextWidth
-            );
-            ctx.fillText(
-              `${ACTION_TEXT} TO RESTART`,
-              BACKEND_WIDTH / 2,
-              370,
-              maxTextWidth
-            );
-          } else {
+            ctx.strokeText(`HOLD ${ACTION_TEXT} TO RESTART`, BACKEND_WIDTH / 2, 370, maxTextWidth);
+            ctx.fillText(`HOLD ${ACTION_TEXT} TO RESTART`, BACKEND_WIDTH / 2, 370, maxTextWidth);
+
+            // Visual Progress bar for the restart delay
+            if (isRestartPressing) {
+                let holdProgress = Math.min((performance.now() - restartPressTime) / 500, 1.0);
+                let barWidth = 140;
+                
+                // Black Background
+                ctx.fillStyle = "black";
+                ctx.fillRect(BACKEND_WIDTH / 2 - barWidth / 2 - 4, 396, barWidth + 8, 16);
+                
+                // Yellow Loading Bar
+                ctx.fillStyle = "#ffeb3b";
+                ctx.fillRect(BACKEND_WIDTH / 2 - barWidth / 2, 400, barWidth * holdProgress, 8);
+            }
+
+        } else {
             ctx.fillStyle = "white";
             ctx.font = "bold 40px sans-serif";
             ctx.strokeText(humanScore, BACKEND_WIDTH / 2, 80);
             ctx.fillText(humanScore, BACKEND_WIDTH / 2, 80);
-          }
         }
-      }
+    }
+}
 
-      function handleInput() {
-        if (gameState === "START") {
-          gameState = "PLAYING";
-          humanBird.flapped = true;
-        } else if (gameState === "PLAYING") {
-          if (!humanBird.dead) {
-            humanBird.flapped = true;
-          } else {
-            resetGame();
-            gameState = "START";
-          }
+// --- INPUT EVENT HANDLING ---
+
+function handleFlap() {
+    if (gameState === "START") {
+        gameState = "PLAYING";
+        humanBird.flapped = true;
+    } else if (gameState === "PLAYING" && !humanBird.dead) {
+        humanBird.flapped = true;
+    }
+}
+
+function handlePointerDown(e) {
+    // Only prevent default if clicking inside the canvas (leaves checkbox clickable)
+    if (e.target === canvas) {
+        if (e.type === "touchstart") e.preventDefault();
+        
+        if (gameState === "PLAYING" && humanBird.dead) {
+            if (!isRestartPressing) {
+                isRestartPressing = true;
+                restartPressTime = performance.now();
+            }
+        } else {
+            handleFlap();
         }
-      }
+    }
+}
 
-      window.addEventListener("keydown", (e) => {
-        if (e.code === "Space") {
-          e.preventDefault();
-          handleInput();
+function handlePointerUp() {
+    isRestartPressing = false;
+}
+
+window.addEventListener("keydown", (e) => {
+    if (e.code === "Space") {
+        e.preventDefault();
+        if (gameState === "PLAYING" && humanBird.dead) {
+            if (!isRestartPressing) {
+                isRestartPressing = true;
+                restartPressTime = performance.now();
+            }
+        } else {
+            handleFlap();
         }
-      });
-      canvas.addEventListener(
-        "touchstart",
-        (e) => {
-          e.preventDefault();
-          handleInput();
-        },
-        { passive: false }
-      );
-      canvas.addEventListener("mousedown", handleInput);
+    }
+});
 
-      initAI();
-    </script>
-  </body>
+window.addEventListener("keyup", (e) => {
+    if (e.code === "Space") isRestartPressing = false;
+});
+
+canvas.addEventListener("touchstart", handlePointerDown, {passive: false});
+canvas.addEventListener("touchend", handlePointerUp);
+canvas.addEventListener("mousedown", handlePointerDown);
+window.addEventListener("mouseup", handlePointerUp);
+
+initAI();
+</script>
+</body>
 </html>
