@@ -77,6 +77,7 @@
       const MAX_VELOCITY = 10.0;
       const MIN_VELOCITY = -8.0;
       const PIPE_SPEED = 4.0;
+      const PIPE_SPAWN_DIST = 144;
       const GAP_SIZE = 100;
       const PIPE_WIDTH = 52;
       const PIPE_HEIGHT = 320;
@@ -107,9 +108,11 @@
 
       let session = null;
       let gameFrame = 0;
-      let score = 0;
-      let pipes = [];
       let gameState = "LOADING";
+
+      // Independent Scoreboards
+      let humanScore = 0;
+      let aiScore = 0;
 
       let humanBird = {
         y: 244,
@@ -142,7 +145,8 @@
       }
 
       function resetGame() {
-        score = 0;
+        humanScore = 0;
+        aiScore = 0;
         pipes = [];
         humanBird = {
           y: 244,
@@ -153,7 +157,6 @@
         };
         aiBird = { y: 244, velocity: -9, rot: 45, flapped: false, dead: false };
 
-        // Gym initializes exactly 3 pipes spaced evenly by 144px starting at the screen edge
         spawnPipePair(BACKEND_WIDTH);
         spawnPipePair(BACKEND_WIDTH + BACKEND_WIDTH / 2);
         spawnPipePair(BACKEND_WIDTH + BACKEND_WIDTH);
@@ -161,13 +164,14 @@
 
       function spawnPipePair(startX) {
         let gap_y = Math.floor(Math.random() * 8) * 10 + 20;
-        gap_y += Math.floor(GYM_HEIGHT * 0.79 * 0.2); // Base offset calculation (80)
+        gap_y += Math.floor(GYM_HEIGHT * 0.79 * 0.2);
 
         pipes.push({
           x: startX,
           top: gap_y,
           bottom: gap_y + GAP_SIZE,
-          passed: false
+          humanPassed: false,
+          aiPassed: false
         });
       }
 
@@ -188,12 +192,11 @@
                 bird.velocity += GRAVITY;
               }
 
-              if (bird.rot > -90) bird.rot -= 3; // PLAYER_VEL_ROT = 3
+              if (bird.rot > -90) bird.rot -= 3;
 
               bird.y += bird.velocity;
               checkCollision(bird);
             } else if (bird.y < GYM_HEIGHT * 0.79 - PLAYER_HEIGHT) {
-              // Rapidly fall to the floor when dead
               bird.velocity += GRAVITY;
               if (bird.velocity > MAX_VELOCITY) bird.velocity = MAX_VELOCITY;
               bird.y += bird.velocity;
@@ -206,30 +209,43 @@
           if (anyAlive) {
             pipes.forEach((p) => {
               p.x -= PIPE_SPEED;
-              if (!p.passed && p.x + PIPE_WIDTH < BIRD_X + PLAYER_WIDTH / 2) {
-                p.passed = true;
-                score++;
+
+              // Track score crossing independently for the human
+              if (
+                !p.humanPassed &&
+                !humanBird.dead &&
+                p.x + PIPE_WIDTH < BIRD_X + PLAYER_WIDTH / 2
+              ) {
+                p.humanPassed = true;
+                humanScore++;
+              }
+              // Track score crossing independently for the AI
+              if (
+                !p.aiPassed &&
+                !aiBird.dead &&
+                p.x + PIPE_WIDTH < BIRD_X + PLAYER_WIDTH / 2
+              ) {
+                p.aiPassed = true;
+                aiScore++;
               }
             });
 
-            // Keep array capped at exactly 3 pipes, recycling out-of-bounds instances to the back
             for (let i = 0; i < pipes.length; i++) {
               if (pipes[i].x < -PIPE_WIDTH) {
                 let gap_y = Math.floor(Math.random() * 8) * 10 + 20;
                 gap_y += Math.floor(GYM_HEIGHT * 0.79 * 0.2);
 
-                pipes[i].x = BACKEND_WIDTH + PIPE_WIDTH + BACKEND_WIDTH * 0.2; // Exactly 397px
+                pipes[i].x = BACKEND_WIDTH + PIPE_WIDTH + BACKEND_WIDTH * 0.2;
                 pipes[i].top = gap_y;
                 pipes[i].bottom = gap_y + GAP_SIZE;
-                pipes[i].passed = false;
+                pipes[i].humanPassed = false;
+                pipes[i].aiPassed = false;
               }
             }
 
             gameFrame++;
 
-            // --- 1:1 REPLICATED INFERENCE ENGINE ---
             if (!aiBird.dead && session) {
-              // Map out array objects while matching Gym's off-screen masking rules
               let obsPipes = pipes.map((p) => {
                 if (p.x > BACKEND_WIDTH) {
                   return { x: BACKEND_WIDTH, top: 0, bottom: GYM_HEIGHT };
@@ -238,10 +254,8 @@
                 }
               });
 
-              // Sort purely by X coordinate from left to right
               obsPipes.sort((a, b) => a.x - b.x);
 
-              // Build the normalized 12-dimensional vector matching Gym arrays exactly
               let state12D = [
                 obsPipes[0].x / BACKEND_WIDTH,
                 obsPipes[0].top / GYM_HEIGHT,
@@ -320,7 +334,6 @@
       function drawSprite(img, x, y, rot) {
         ctx.save();
         ctx.translate(x + PLAYER_WIDTH / 2, y + PLAYER_HEIGHT / 2);
-        // Apply visual rotation clamp rule from Pygame rendering script
         let visible_rot = rot > 20 ? 20 : rot;
         let rad = gameState === "START" ? 0 : -((visible_rot * Math.PI) / 180);
         ctx.rotate(rad);
@@ -336,29 +349,21 @@
 
       function drawPipes() {
         pipes.forEach((p) => {
-          // --- Upper Pipe (Flipped with End Cap facing down) ---
           ctx.save();
-          // Move origin to the bottom edge of the upper pipe
           ctx.translate(p.x, p.top);
-          // Flip vertically along the Y-axis
           ctx.scale(1, -1);
-          // Draw the pipe extending upwards into the sky
           ctx.drawImage(pipeImg, 0, 0, PIPE_WIDTH, PIPE_HEIGHT);
           ctx.restore();
-
-          // --- Lower Pipe (Standard facing up) ---
           ctx.drawImage(pipeImg, p.x, p.bottom, PIPE_WIDTH, PIPE_HEIGHT);
         });
       }
 
       function checkCollision(bird) {
-        // Floor boundary check: self._player_y + PLAYER_HEIGHT >= self._ground["y"] - 1
         if (bird.y + PLAYER_HEIGHT >= GYM_HEIGHT * 0.79 - 1) {
           bird.dead = true;
           return;
         }
 
-        // Strict AABB Rectangle Collision Matching Pygame Rects 1-to-1
         let birdBox = {
           left: BIRD_X,
           right: BIRD_X + PLAYER_WIDTH,
@@ -419,14 +424,23 @@
           ctx.strokeText("Blue Bird = AI Bot", BACKEND_WIDTH / 2, 185);
           ctx.fillText("Blue Bird = AI Bot", BACKEND_WIDTH / 2, 185);
         } else if (gameState === "PLAYING") {
-          ctx.fillStyle = "white";
           ctx.strokeStyle = "black";
           ctx.lineWidth = 4;
-          ctx.font = "bold 40px sans-serif";
-          ctx.strokeText(score, BACKEND_WIDTH / 2, 80);
-          ctx.fillText(score, BACKEND_WIDTH / 2, 80);
+          ctx.font = "bold 36px sans-serif";
+
+          // Render Split Scoreboard Layout side-by-side
+          // Human (Left side in Yellow)
+          ctx.fillStyle = "#ffeb3b";
+          ctx.strokeText(humanScore, BACKEND_WIDTH / 3, 70);
+          ctx.fillText(humanScore, BACKEND_WIDTH / 3, 70);
+
+          // AI Bot (Right side in Blue)
+          ctx.fillStyle = "#64b5f6";
+          ctx.strokeText(aiScore, (BACKEND_WIDTH / 3) * 2, 70);
+          ctx.fillText(aiScore, (BACKEND_WIDTH / 3) * 2, 70);
 
           if (humanBird.dead) {
+            ctx.fillStyle = "white";
             ctx.font = "bold 40px sans-serif";
             ctx.strokeText("GAME OVER", BACKEND_WIDTH / 2, 180);
             ctx.fillText("GAME OVER", BACKEND_WIDTH / 2, 180);
