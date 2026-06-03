@@ -57,7 +57,8 @@
       // --- HARDWARE DETECTION ---
       const isMobile = window.innerHeight > window.innerWidth;
       const hasTouch = "ontouchstart" in window || navigator.maxTouchPoints > 0;
-      const ACTION_TEXT = hasTouch ? "TAP" : "SPACEBAR";
+      // Changed to SPACE to fit the narrow 288px viewport better
+      const ACTION_TEXT = hasTouch ? "TAP" : "SPACE";
 
       // --- VIEWPORT DECOUPLING ---
       const BACKEND_WIDTH = 288;
@@ -146,7 +147,6 @@
           loader.style.display = "none";
           gameState = "START";
           resetGame();
-          // Initialize the timer before starting the loop
           lastTime = performance.now();
           requestAnimationFrame(gameLoop);
         } catch (e) {
@@ -186,19 +186,13 @@
         });
       }
 
-      // --- CORE EXECUTION LOOP (NOW FPS LOCKED) ---
+      // --- CORE EXECUTION LOOP ---
       async function gameLoop(currentTime) {
-        // Immediately queue the next frame
         requestAnimationFrame(gameLoop);
-
-        // Calculate time elapsed
         let deltaTime = currentTime - lastTime;
 
-        // Only update physics if 16.6ms (1/60th of a sec) has passed and we aren't already updating
         if (deltaTime >= fpsInterval && !isUpdating) {
           isUpdating = true;
-
-          // Adjust the tracker to maintain perfect 60FPS sync without drifting
           lastTime = currentTime - (deltaTime % fpsInterval);
 
           // -- START PHYSICS UPDATE --
@@ -441,25 +435,46 @@
       function drawUI() {
         ctx.textAlign = "center";
         ctx.lineJoin = "round";
+        // 4th parameter adds a forced max-width so text never spills off the 288px canvas
+        const maxTextWidth = BACKEND_WIDTH - 20;
 
         if (gameState === "START") {
           ctx.fillStyle = "white";
           ctx.strokeStyle = "black";
           ctx.lineWidth = 4;
           ctx.font = "bold 30px sans-serif";
-          ctx.strokeText(`${ACTION_TEXT} TO START`, BACKEND_WIDTH / 2, 140);
-          ctx.fillText(`${ACTION_TEXT} TO START`, BACKEND_WIDTH / 2, 140);
+          ctx.strokeText(
+            `${ACTION_TEXT} TO START`,
+            BACKEND_WIDTH / 2,
+            140,
+            maxTextWidth
+          );
+          ctx.fillText(
+            `${ACTION_TEXT} TO START`,
+            BACKEND_WIDTH / 2,
+            140,
+            maxTextWidth
+          );
 
           ctx.fillStyle = "#64b5f6";
           ctx.lineWidth = 3;
           ctx.font = "bold 16px sans-serif";
-          ctx.strokeText("Blue Bird = AI Bot", BACKEND_WIDTH / 2, 185);
-          ctx.fillText("Blue Bird = AI Bot", BACKEND_WIDTH / 2, 185);
+          ctx.strokeText(
+            "Blue Bird = AI Bot",
+            BACKEND_WIDTH / 2,
+            185,
+            maxTextWidth
+          );
+          ctx.fillText(
+            "Blue Bird = AI Bot",
+            BACKEND_WIDTH / 2,
+            185,
+            maxTextWidth
+          );
         } else if (gameState === "PLAYING") {
           ctx.strokeStyle = "black";
           ctx.lineWidth = 4;
 
-          // --- ONLY DRAW BOTH SCORES IF HUMAN IS DEAD ---
           if (humanBird.dead) {
             ctx.font = "bold 36px sans-serif";
 
@@ -475,15 +490,24 @@
 
             ctx.fillStyle = "white";
             ctx.font = "bold 40px sans-serif";
-            ctx.strokeText("GAME OVER", BACKEND_WIDTH / 2, 180);
-            ctx.fillText("GAME OVER", BACKEND_WIDTH / 2, 180);
+            ctx.strokeText("GAME OVER", BACKEND_WIDTH / 2, 180, maxTextWidth);
+            ctx.fillText("GAME OVER", BACKEND_WIDTH / 2, 180, maxTextWidth);
 
             ctx.font = "bold 20px sans-serif";
-            // Dynamically update text instructions based on device
-            ctx.strokeText(`${ACTION_TEXT} TO RESTART`, BACKEND_WIDTH / 2, 230);
-            ctx.fillText(`${ACTION_TEXT} TO RESTART`, BACKEND_WIDTH / 2, 230);
+            ctx.strokeText(
+              `${ACTION_TEXT} TO RESTART`,
+              BACKEND_WIDTH / 2,
+              230,
+              maxTextWidth
+            );
+            ctx.fillText(
+              `${ACTION_TEXT} TO RESTART`,
+              BACKEND_WIDTH / 2,
+              230,
+              maxTextWidth
+            );
           } else {
-            // --- HUMAN STILL ALIVE: DRAW SINGLE SCORE CENTERED ---
+            // SINGLE SCORE CENTERED
             ctx.fillStyle = "white";
             ctx.font = "bold 40px sans-serif";
             ctx.strokeText(humanScore, BACKEND_WIDTH / 2, 80);
