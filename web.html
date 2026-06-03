@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Hackathon: Human vs Trained FlappyBird RL Agent</title>
+    <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js"></script>
+    <style>
+      body {
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        text-align: center;
+        background: #1a1a1a;
+        color: #ffffff;
+        margin: 0;
+        padding: 20px;
+      }
+      h1 {
+        color: #4caf50;
+        margin-bottom: 5px;
+      }
+      .subtitle {
+        font-size: 1.1em;
+        color: #aaa;
+        margin-bottom: 20px;
+      }
+      canvas {
+        background: #70c5ce;
+        display: block;
+        margin: 0 auto;
+        border: 4px solid #ffffff;
+        border-radius: 8px;
+        box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
+      }
+      .controls {
+        margin-top: 15px;
+        font-size: 1.1em;
+        color: #ff9800;
+      }
+      .status {
+        margin-top: 10px;
+        font-weight: bold;
+        font-size: 1.2em;
+        color: #2196f3;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Human vs Cloud-Trained RL Agent</h1>
+    <div class="subtitle">FlappyBird-v0 12-Dimensional State Engine Match</div>
+
+    <div id="statusField" class="status">Loading Trained RL Brain...</div>
+    <canvas id="gameCanvas" width="288" height="512"></canvas>
+    <div class="controls">
+      Press <strong>SPACEBAR</strong> or <strong>TAP CANVAS</strong> to jump
+      your Orange Bird!
+    </div>
+
+    <script>
+      const canvas = document.getElementById("gameCanvas");
+      const ctx = canvas.getContext("2d");
+      const statusField = document.getElementById("statusField");
+
+      // --- SYSTEM ENGINE CONSTANTS (Matched directly to flappy-bird-gymnasium physics rules) ---
+      const BACKEND_WIDTH = 288;
+      const BACKEND_HEIGHT = 512;
+      const GRAVITY = 0.4;
+      const FLAP_IMPULSE = -7.0;
+
+      const PIPE_SPEED = 3.0;
+      const PIPE_SPAWN_INTERVAL = 90;
+      const GAP_SIZE = 100;
+      const PIPE_WIDTH = 52;
+      const BIRD_X = 57; // Core horizontal coordinate point used by the library
+
+      let session = null;
+      let gameFrame = 0;
+      let pipes = [];
+
+      // Define Entities
+      let humanBird = { y: 200, velocity: 0, dead: false, color: "#ff5722" };
+      let aiBird = { y: 200, velocity: 0, dead: false, color: "#4caf50" };
+
+      // 1. Core ONNX Web Runtime Initialization
+      async function initAI() {
+        try {
+          // Loads the raw file out of your GitHub Pages / static web root directory
+          session = await ort.InferenceSession.create(
+            "./flappy_bird_packed.onnx"
+          );
+          statusField.innerText = "RL Agent Live! Match Active.";
+          statusField.style.color = "#4caf50";
+          resetGame();
+          requestAnimationFrame(updateLoop);
+        } catch (e) {
+          statusField.innerText =
+            "Error loading flappy_bird.onnx file! Check developer console.";
+          statusField.style.color = "#f44336";
+          console.error("ONNX Runtime Error:", e);
+        }
+      }
+
+      function resetGame() {
+        gameFrame = 0;
+        pipes = [];
+        humanBird = { y: 200, velocity: 0, dead: false, color: "#ff5722" };
+        aiBird = { y: 200, velocity: 0, dead: false, color: "#4caf50" };
+
+        // Seed initial procedural pipe configuration layout
+        spawnPipePair(BACKEND_WIDTH + 100);
+        spawnPipePair(BACKEND_WIDTH + 100 + BACKEND_WIDTH / 2 + PIPE_WIDTH / 2);
+      }
+
+      function spawnPipePair(startX) {
+        let topHeight = Math.random() * (BACKEND_HEIGHT - GAP_SIZE - 160) + 60;
+        pipes.push({
+          x: startX,
+          top: topHeight,
+          bottom: topHeight + GAP_SIZE
+        });
+      }
+
+      // 2. Real-time Frame Evaluation & Pipeline Integration
+      async function updateLoop() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        gameFrame++;
+
+        // --- Entity Physics Logic ---
+        if (!humanBird.dead) {
+          humanBird.velocity += GRAVITY;
+          humanBird.y += humanBird.velocity;
+          checkCollision(humanBird);
+        }
+        if (!aiBird.dead) {
+          aiBird.velocity += GRAVITY;
+          aiBird.y += aiBird.velocity;
+          checkCollision(aiBird);
+        }
+
+        // Move Pipe Stack across horizontal screen boundaries
+        pipes.forEach((p) => (p.x -= PIPE_SPEED));
+        if (pipes.length > 0 && pipes[0].x < -PIPE_WIDTH) {
+          pipes.shift();
+          spawnPipePair(pipes[pipes.length - 1].x + 180);
+        }
+
+        // --- Core 12-Dimensional Feature Space Extraction Mapping ---
+        // Sort and segment historical/future pipe states surrounding the target evaluation line
+        let pastPipes = pipes.filter((p) => p.x + PIPE_WIDTH <= BIRD_X);
+        let futurePipes = pipes.filter((p) => p.x + PIPE_WIDTH > BIRD_X);
+
+        let lastP = pastPipes[pastPipes.length - 1] || {
+          x: -200,
+          top: 0,
+          bottom: BACKEND_HEIGHT
+        };
+        let nextP = futurePipes[0] || {
+          x: BACKEND_WIDTH,
+          top: 0,
+          bottom: BACKEND_HEIGHT
+        };
+        let next2P = futurePipes[1] || {
+          x: BACKEND_WIDTH + 200,
+          top: 0,
+          bottom: BACKEND_HEIGHT
+        };
+
+        // Structural Array Formulation matching flappy_bird_gymnasium[use_lidar=False] definition
+        let state12D = [
+          lastP.x,
+          lastP.top,
+          lastP.bottom,
+          nextP.x,
+          nextP.top,
+          nextP.bottom,
+          next2P.x,
+          next2P.top,
+          next2P.bottom,
+          aiBird.y,
+          aiBird.velocity,
+          0.0 // Rotation pitch tracker placeholder
+        ];
+
+        // --- Neural Network Predictive Inference Phase ---
+        if (!aiBird.dead && session) {
+          try {
+            // Allocate 1x12 matrix array buffer
+            const inputTensor = new ort.Tensor(
+              "float32",
+              Float32Array.from(state12D),
+              [1, 12]
+            );
+            const outputMap = await session.run({ input: inputTensor });
+
+            // Stable-Baselines3 exports standard Q-value structures under your assigned array wrapper layout
+            const qValues = outputMap.output.data;
+
+            // Execute prediction selection (Action: 1 = Flap, 0 = Do Nothing)
+            let action = qValues[1] > qValues[0] ? 1 : 0;
+            if (action === 1) {
+              aiBird.velocity = FLAP_IMPULSE;
+            }
+          } catch (err) {
+            console.error("Inference Step Interrupted:", err);
+          }
+        }
+
+        // Automated Session Loop Reset when both contestants have hit physical boundaries
+        if (humanBird.dead && aiBird.dead) {
+          resetGame();
+        }
+
+        // Graphic Layer Execution
+        drawPipes();
+        drawEntity(humanBird);
+        drawEntity(aiBird);
+
+        requestAnimationFrame(updateLoop);
+      }
+
+      // --- Auxiliary Engine Support Subroutines ---
+      function checkCollision(bird) {
+        if (bird.y > BACKEND_HEIGHT || bird.y < 0) {
+          bird.dead = true;
+          return;
+        }
+        for (let p of pipes) {
+          if (p.x < BIRD_X + 12 && p.x + PIPE_WIDTH > BIRD_X - 12) {
+            if (bird.y - 12 < p.top || bird.y + 12 > p.bottom) {
+              bird.dead = true;
+            }
+          }
+        }
+      }
+
+      function drawEntity(b) {
+        if (b.dead) return;
+        ctx.fillStyle = b.color;
+        ctx.beginPath();
+        ctx.arc(BIRD_X, b.y, 12, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
+
+      function drawPipes() {
+        ctx.fillStyle = "#73bf2e";
+        pipes.forEach((p) => {
+          // Render Upper Bar Segment
+          ctx.fillRect(p.x, 0, PIPE_WIDTH, p.top);
+          // Render Lower Bar Segment
+          ctx.fillRect(p.x, p.bottom, PIPE_WIDTH, BACKEND_HEIGHT - p.bottom);
+        });
+      }
+
+      // Global UI Input Management Action Rules
+      window.addEventListener("keydown", (e) => {
+        if (e.code === "Space" && !humanBird.dead) {
+          humanBird.velocity = FLAP_IMPULSE;
+          e.preventDefault(); // Mute browser viewport window scrolling actions
+        }
+      });
+      canvas.addEventListener("touchstart", (e) => {
+        if (!humanBird.dead) {
+          humanBird.velocity = FLAP_IMPULSE;
+          e.preventDefault();
+        }
+      });
+
+      // Run Engine Setup
+      initAI();
+    </script>
+  </body>
+</html>
