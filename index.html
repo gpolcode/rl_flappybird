@@ -43,22 +43,73 @@
         text-shadow: 2px 2px 0 #000;
         pointer-events: none;
       }
+
+      /* Seamless Arcade UI Styling */
+      #uiContainer {
+        position: absolute;
+        bottom: 20px;
+        left: 20px;
+        color: white;
+        font-size: 16px; /* Matches the sub-text of the canvas */
+        font-family: sans-serif;
+        font-weight: bold;
+        /* Arcade stroke effect */
+        -webkit-text-stroke: 1px black;
+        text-shadow: 1px 1px 0 #000;
+        z-index: 100;
+        user-select: none;
+      }
+
+      #uiContainer label {
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      #uiContainer input {
+        cursor: pointer;
+        width: 18px;
+        height: 18px;
+        margin: 0;
+        /* Matches the AI Bird color */
+        accent-color: #64b5f6;
+        /* Light stroke for the checkbox square itself */
+        outline: 1px solid black;
+      }
     </style>
   </head>
   <body>
     <div id="loader">Loading RL Brain...</div>
+
+    <div id="uiContainer">
+      <label> <input type="checkbox" id="aiToggle" /> Show AI Bot </label>
+    </div>
+
     <canvas id="gameCanvas"></canvas>
 
     <script>
       const canvas = document.getElementById("gameCanvas");
       const ctx = canvas.getContext("2d");
       const loader = document.getElementById("loader");
+      const aiToggle = document.getElementById("aiToggle");
 
       // --- HARDWARE DETECTION ---
       const isMobile = window.innerHeight > window.innerWidth;
       const hasTouch = "ontouchstart" in window || navigator.maxTouchPoints > 0;
-      // Changed to SPACE to fit the narrow 288px viewport better
       const ACTION_TEXT = hasTouch ? "TAP" : "SPACE";
+
+      // --- STATE PERSISTENCE ---
+      const savedToggle = localStorage.getItem("showAiBot");
+      if (savedToggle !== null) {
+        aiToggle.checked = savedToggle === "true";
+      } else {
+        aiToggle.checked = false;
+      }
+
+      aiToggle.addEventListener("change", (e) => {
+        localStorage.setItem("showAiBot", e.target.checked);
+      });
 
       // --- VIEWPORT DECOUPLING ---
       const BACKEND_WIDTH = 288;
@@ -309,16 +360,30 @@
             gameState === "PLAYING" && anyAlive
               ? -(gameFrame * PIPE_SPEED) % 24
               : 0;
+          let groundY = GYM_HEIGHT * 0.79;
 
-          for (let y = GYM_HEIGHT * 0.79; y < VISUAL_HEIGHT + 112; y += 112) {
-            ctx.drawImage(baseImg, baseOffset, y, BACKEND_WIDTH + 24, 112);
+          ctx.drawImage(baseImg, baseOffset, groundY, BACKEND_WIDTH + 24, 112);
+
+          if (VISUAL_HEIGHT > groundY + 112) {
+            ctx.fillStyle = "#ded895";
+            ctx.fillRect(
+              0,
+              groundY + 112,
+              BACKEND_WIDTH,
+              VISUAL_HEIGHT - (groundY + 112)
+            );
           }
 
           let hoverY =
             gameState === "START" ? Math.sin(gameFrame * 0.1) * 6 : 0;
           let flapIndex = Math.floor(gameFrame / 5) % 4;
 
-          if (aiBird.y < GYM_HEIGHT * 0.79 - PLAYER_HEIGHT || !aiBird.dead) {
+          const shouldDrawAI = aiToggle.checked || humanBird.dead;
+
+          if (
+            (aiBird.y < groundY - PLAYER_HEIGHT || !aiBird.dead) &&
+            shouldDrawAI
+          ) {
             let f =
               aiBird.dead || (gameState !== "PLAYING" && gameState !== "START")
                 ? 1
@@ -333,10 +398,7 @@
             ctx.globalAlpha = 1.0;
           }
 
-          if (
-            humanBird.y < GYM_HEIGHT * 0.79 - PLAYER_HEIGHT ||
-            !humanBird.dead
-          ) {
+          if (humanBird.y < groundY - PLAYER_HEIGHT || !humanBird.dead) {
             let f =
               humanBird.dead ||
               (gameState !== "PLAYING" && gameState !== "START")
@@ -435,7 +497,6 @@
       function drawUI() {
         ctx.textAlign = "center";
         ctx.lineJoin = "round";
-        // 4th parameter adds a forced max-width so text never spills off the 288px canvas
         const maxTextWidth = BACKEND_WIDTH - 20;
 
         if (gameState === "START") {
@@ -478,36 +539,33 @@
           if (humanBird.dead) {
             ctx.font = "bold 36px sans-serif";
 
-            // Human (Left side in Yellow)
             ctx.fillStyle = "#ffeb3b";
             ctx.strokeText(humanScore, BACKEND_WIDTH / 3, 70);
             ctx.fillText(humanScore, BACKEND_WIDTH / 3, 70);
 
-            // AI Bot (Right side in Blue)
             ctx.fillStyle = "#64b5f6";
             ctx.strokeText(aiScore, (BACKEND_WIDTH / 3) * 2, 70);
             ctx.fillText(aiScore, (BACKEND_WIDTH / 3) * 2, 70);
 
             ctx.fillStyle = "white";
             ctx.font = "bold 40px sans-serif";
-            ctx.strokeText("GAME OVER", BACKEND_WIDTH / 2, 180, maxTextWidth);
-            ctx.fillText("GAME OVER", BACKEND_WIDTH / 2, 180, maxTextWidth);
+            ctx.strokeText("GAME OVER", BACKEND_WIDTH / 2, 320, maxTextWidth);
+            ctx.fillText("GAME OVER", BACKEND_WIDTH / 2, 320, maxTextWidth);
 
             ctx.font = "bold 20px sans-serif";
             ctx.strokeText(
               `${ACTION_TEXT} TO RESTART`,
               BACKEND_WIDTH / 2,
-              230,
+              370,
               maxTextWidth
             );
             ctx.fillText(
               `${ACTION_TEXT} TO RESTART`,
               BACKEND_WIDTH / 2,
-              230,
+              370,
               maxTextWidth
             );
           } else {
-            // SINGLE SCORE CENTERED
             ctx.fillStyle = "white";
             ctx.font = "bold 40px sans-serif";
             ctx.strokeText(humanScore, BACKEND_WIDTH / 2, 80);
