@@ -2,111 +2,125 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Hackathon: Human vs Trained FlappyBird RL Agent</title>
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
+    <title>Hackathon: Human vs Trained RL Agent</title>
     <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js"></script>
     <style>
+      html,
       body {
-        font-family:
-          -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-        text-align: center;
-        background: #1a1a1a;
-        color: #ffffff;
         margin: 0;
-        padding: 20px;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        background: #222;
+        overflow: hidden;
+        font-family: "Courier New", Courier, monospace;
       }
-      h1 {
-        color: #4caf50;
-        margin-bottom: 5px;
-      }
-      .subtitle {
-        font-size: 1.1em;
-        color: #aaa;
-        margin-bottom: 20px;
-      }
+
       canvas {
-        background: #70c5ce;
         display: block;
-        margin: 0 auto;
-        border: 4px solid #ffffff;
-        border-radius: 8px;
-        box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
+        width: 100vw;
+        height: 100vh;
+        object-fit: contain;
+        background: #000;
+        image-rendering: pixelated; /* Keeps pixel art sharp on large displays */
       }
-      .controls {
-        margin-top: 15px;
-        font-size: 1.1em;
-        color: #ff9800;
-      }
-      .status {
-        margin-top: 10px;
+
+      #loader {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        color: white;
+        font-size: 24px;
         font-weight: bold;
-        font-size: 1.2em;
-        color: #2196f3;
+        pointer-events: none;
+        text-shadow: 2px 2px 0 #000;
       }
     </style>
   </head>
   <body>
-    <h1>Human vs Cloud-Trained RL Agent</h1>
-    <div class="subtitle">FlappyBird-v0 12-Dimensional State Engine Match</div>
-
-    <div id="statusField" class="status">Loading Trained RL Brain...</div>
-    <canvas id="gameCanvas" width="288" height="512"></canvas>
-    <div class="controls">
-      Press <strong>SPACEBAR</strong> or <strong>TAP CANVAS</strong> to jump
-      your Orange Bird!
-    </div>
+    <div id="loader">Loading RL Brain...</div>
+    <canvas id="gameCanvas"></canvas>
 
     <script>
       const canvas = document.getElementById("gameCanvas");
       const ctx = canvas.getContext("2d");
-      const statusField = document.getElementById("statusField");
+      const loader = document.getElementById("loader");
 
-      // --- SYSTEM ENGINE CONSTANTS (Matched directly to flappy-bird-gymnasium physics rules) ---
+      // --- SYSTEM ENGINE CONSTANTS ---
       const BACKEND_WIDTH = 288;
       const BACKEND_HEIGHT = 512;
       const GRAVITY = 0.4;
       const FLAP_IMPULSE = -7.0;
-
       const PIPE_SPEED = 3.0;
-      const PIPE_SPAWN_INTERVAL = 90;
       const GAP_SIZE = 100;
       const PIPE_WIDTH = 52;
-      const BIRD_X = 57; // Core horizontal coordinate point used by the library
+      const BIRD_X = 57;
+
+      // --- HIGH-DPI SHARPNESS FIX ---
+      const RESOLUTION_SCALE = 4;
+      canvas.width = BACKEND_WIDTH * RESOLUTION_SCALE;
+      canvas.height = BACKEND_HEIGHT * RESOLUTION_SCALE;
+      ctx.scale(RESOLUTION_SCALE, RESOLUTION_SCALE);
+      ctx.imageSmoothingEnabled = false;
+
+      // --- ASSET LOADING (WITH ANIMATION CYCLES) ---
+      const bgImg = new Image();
+      bgImg.src = "assets/background-day.png";
+      const pipeImg = new Image();
+      pipeImg.src = "assets/pipe-green.png";
+      const baseImg = new Image();
+      baseImg.src = "assets/base.png";
+
+      // Helper to load the 4-step animation sequence for a specific color
+      function loadBirdFrames(color) {
+        const down = new Image();
+        down.src = `assets/${color}bird-downflap.png`;
+        const mid = new Image();
+        mid.src = `assets/${color}bird-midflap.png`;
+        const up = new Image();
+        up.src = `assets/${color}bird-upflap.png`;
+        return [down, mid, up, mid]; // Natural cycle: Down -> Mid -> Up -> Mid
+      }
+
+      const yellowBirdFrames = loadBirdFrames("yellow");
+      const blueBirdFrames = loadBirdFrames("blue");
 
       let session = null;
-      let gameFrame = 0;
+      let gameFrame = 0; // Universal frame counter for animations
+      let score = 0;
       let pipes = [];
+      let gameState = "LOADING";
 
-      // Define Entities
-      let humanBird = { y: 200, velocity: 0, dead: false, color: "#ff5722" };
-      let aiBird = { y: 200, velocity: 0, dead: false, color: "#4caf50" };
+      let humanBird = { y: 240, velocity: 0, dead: false };
+      let aiBird = { y: 240, velocity: 0, dead: false };
 
-      // 1. Core ONNX Web Runtime Initialization
+      // 1. Initialize ONNX
       async function initAI() {
         try {
-          // Loads the raw file out of your GitHub Pages / static web root directory
           session = await ort.InferenceSession.create(
             "./flappy_bird_packed.onnx"
           );
-          statusField.innerText = "RL Agent Live! Match Active.";
-          statusField.style.color = "#4caf50";
+          loader.style.display = "none";
+          gameState = "START";
           resetGame();
-          requestAnimationFrame(updateLoop);
+          requestAnimationFrame(gameLoop);
         } catch (e) {
-          statusField.innerText =
-            "Error loading flappy_bird.onnx file! Check developer console.";
-          statusField.style.color = "#f44336";
+          loader.innerText = "Error loading flappy_bird_packed.onnx";
           console.error("ONNX Runtime Error:", e);
         }
       }
 
       function resetGame() {
-        gameFrame = 0;
+        score = 0;
         pipes = [];
-        humanBird = { y: 200, velocity: 0, dead: false, color: "#ff5722" };
-        aiBird = { y: 200, velocity: 0, dead: false, color: "#4caf50" };
+        humanBird = { y: 240, velocity: 0, dead: false };
+        aiBird = { y: 240, velocity: 0, dead: false };
 
-        // Seed initial procedural pipe configuration layout
         spawnPipePair(BACKEND_WIDTH + 100);
         spawnPipePair(BACKEND_WIDTH + 100 + BACKEND_WIDTH / 2 + PIPE_WIDTH / 2);
       }
@@ -116,111 +130,178 @@
         pipes.push({
           x: startX,
           top: topHeight,
-          bottom: topHeight + GAP_SIZE
+          bottom: topHeight + GAP_SIZE,
+          passed: false
         });
       }
 
-      // 2. Real-time Frame Evaluation & Pipeline Integration
-      async function updateLoop() {
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        gameFrame++;
+      // 2. The Core Execution Loop
+      async function gameLoop() {
+        ctx.clearRect(0, 0, BACKEND_WIDTH, BACKEND_HEIGHT);
+        ctx.drawImage(bgImg, 0, 0, BACKEND_WIDTH, BACKEND_HEIGHT);
 
-        // --- Entity Physics Logic ---
-        if (!humanBird.dead) {
-          humanBird.velocity += GRAVITY;
-          humanBird.y += humanBird.velocity;
-          checkCollision(humanBird);
-        }
-        if (!aiBird.dead) {
-          aiBird.velocity += GRAVITY;
-          aiBird.y += aiBird.velocity;
-          checkCollision(aiBird);
+        // Global animation progression (unless both birds are dead)
+        if (gameState !== "GAMEOVER") {
+          gameFrame++;
         }
 
-        // Move Pipe Stack across horizontal screen boundaries
-        pipes.forEach((p) => (p.x -= PIPE_SPEED));
-        if (pipes.length > 0 && pipes[0].x < -PIPE_WIDTH) {
-          pipes.shift();
-          spawnPipePair(pipes[pipes.length - 1].x + 180);
-        }
+        if (gameState === "PLAYING") {
+          // Update Physics
+          if (!humanBird.dead) {
+            humanBird.velocity += GRAVITY;
+            humanBird.y += humanBird.velocity;
+            checkCollision(humanBird);
+          }
+          if (!aiBird.dead) {
+            aiBird.velocity += GRAVITY;
+            aiBird.y += aiBird.velocity;
+            checkCollision(aiBird);
+          }
 
-        // --- Core 12-Dimensional Feature Space Extraction Mapping ---
-        // Sort and segment historical/future pipe states surrounding the target evaluation line
-        let pastPipes = pipes.filter((p) => p.x + PIPE_WIDTH <= BIRD_X);
-        let futurePipes = pipes.filter((p) => p.x + PIPE_WIDTH > BIRD_X);
+          // Move Pipes & Score Tracking
+          pipes.forEach((p) => {
+            p.x -= PIPE_SPEED;
+            if (!p.passed && p.x + PIPE_WIDTH < BIRD_X) {
+              p.passed = true;
+              score++;
+            }
+          });
 
-        let lastP = pastPipes[pastPipes.length - 1] || {
-          x: -200,
-          top: 0,
-          bottom: BACKEND_HEIGHT
-        };
-        let nextP = futurePipes[0] || {
-          x: BACKEND_WIDTH,
-          top: 0,
-          bottom: BACKEND_HEIGHT
-        };
-        let next2P = futurePipes[1] || {
-          x: BACKEND_WIDTH + 200,
-          top: 0,
-          bottom: BACKEND_HEIGHT
-        };
+          // Pipe Cleanup & Spawning
+          if (pipes.length > 0 && pipes[0].x < -PIPE_WIDTH) {
+            pipes.shift();
+            spawnPipePair(pipes[pipes.length - 1].x + 180);
+          }
 
-        // Structural Array Formulation matching flappy_bird_gymnasium[use_lidar=False] definition
-        let state12D = [
-          lastP.x,
-          lastP.top,
-          lastP.bottom,
-          nextP.x,
-          nextP.top,
-          nextP.bottom,
-          next2P.x,
-          next2P.top,
-          next2P.bottom,
-          aiBird.y,
-          aiBird.velocity,
-          0.0 // Rotation pitch tracker placeholder
-        ];
+          // --- AI INFERENCE ENGINE ---
+          if (!aiBird.dead && session) {
+            let pastPipes = pipes.filter((p) => p.x + PIPE_WIDTH <= BIRD_X);
+            let futurePipes = pipes.filter((p) => p.x + PIPE_WIDTH > BIRD_X);
 
-        // --- Neural Network Predictive Inference Phase ---
-        if (!aiBird.dead && session) {
-          try {
-            // Allocate 1x12 matrix array buffer
+            let lastP = pastPipes[pastPipes.length - 1] || {
+              x: -200,
+              top: 0,
+              bottom: BACKEND_HEIGHT
+            };
+            let nextP = futurePipes[0] || {
+              x: BACKEND_WIDTH,
+              top: 0,
+              bottom: BACKEND_HEIGHT
+            };
+            let next2P = futurePipes[1] || {
+              x: BACKEND_WIDTH + 200,
+              top: 0,
+              bottom: BACKEND_HEIGHT
+            };
+
+            let state12D = [
+              lastP.x,
+              lastP.top,
+              lastP.bottom,
+              nextP.x,
+              nextP.top,
+              nextP.bottom,
+              next2P.x,
+              next2P.top,
+              next2P.bottom,
+              aiBird.y,
+              aiBird.velocity,
+              0.0
+            ];
+
             const inputTensor = new ort.Tensor(
               "float32",
               Float32Array.from(state12D),
               [1, 12]
             );
             const outputMap = await session.run({ input: inputTensor });
-
-            // Stable-Baselines3 exports standard Q-value structures under your assigned array wrapper layout
             const qValues = outputMap.output.data;
 
-            // Execute prediction selection (Action: 1 = Flap, 0 = Do Nothing)
-            let action = qValues[1] > qValues[0] ? 1 : 0;
-            if (action === 1) {
+            if (qValues[1] > qValues[0]) {
               aiBird.velocity = FLAP_IMPULSE;
             }
-          } catch (err) {
-            console.error("Inference Step Interrupted:", err);
+          }
+
+          if (humanBird.dead && aiBird.dead) {
+            gameState = "GAMEOVER";
           }
         }
 
-        // Automated Session Loop Reset when both contestants have hit physical boundaries
-        if (humanBird.dead && aiBird.dead) {
-          resetGame();
+        // --- GRAPHICAL RENDERING ---
+        drawPipes();
+
+        // Smooth scrolling floor effect
+        let baseOffset =
+          gameState !== "GAMEOVER" ? -(gameFrame * PIPE_SPEED) % 24 : 0;
+        ctx.drawImage(
+          baseImg,
+          baseOffset,
+          BACKEND_HEIGHT - 50,
+          BACKEND_WIDTH + 24,
+          112
+        );
+
+        // Calculate hover offsets and wing animations
+        let hoverY = gameState === "START" ? Math.sin(gameFrame * 0.1) * 6 : 0;
+        // Change animation frame every 5 game loops. Freeze on Midflap (1) if dead.
+        let flapIndex = Math.floor(gameFrame / 5) % 4;
+
+        // Render AI Bird (Blue / Ghosted)
+        if (!aiBird.dead) {
+          let frameIndex = gameState === "GAMEOVER" ? 1 : flapIndex;
+          ctx.globalAlpha = 0.5; // Transparent
+          drawSprite(
+            blueBirdFrames[frameIndex],
+            BIRD_X,
+            aiBird.y + hoverY,
+            aiBird.velocity
+          );
+          ctx.globalAlpha = 1.0;
         }
 
-        // Graphic Layer Execution
-        drawPipes();
-        drawEntity(humanBird);
-        drawEntity(aiBird);
+        // Render Human Bird (Yellow / Solid)
+        if (!humanBird.dead) {
+          let frameIndex = gameState === "GAMEOVER" ? 1 : flapIndex;
+          drawSprite(
+            yellowBirdFrames[frameIndex],
+            BIRD_X,
+            humanBird.y + hoverY,
+            humanBird.velocity
+          );
+        }
 
-        requestAnimationFrame(updateLoop);
+        drawUI();
+
+        requestAnimationFrame(gameLoop);
       }
 
-      // --- Auxiliary Engine Support Subroutines ---
+      // --- SUBROUTINES ---
+      function drawSprite(img, x, y, velocity) {
+        ctx.save();
+        ctx.translate(x, y);
+        // Dynamic tilt based on velocity. If in START screen (velocity 0), remains flat.
+        let rotation =
+          gameState === "START"
+            ? 0
+            : Math.min(Math.PI / 4, Math.max(-Math.PI / 4, velocity * 0.1));
+        ctx.rotate(rotation);
+        ctx.drawImage(img, -17, -12, 34, 24);
+        ctx.restore();
+      }
+
+      function drawPipes() {
+        pipes.forEach((p) => {
+          ctx.save();
+          ctx.translate(p.x + PIPE_WIDTH / 2, p.top);
+          ctx.scale(1, -1);
+          ctx.drawImage(pipeImg, -PIPE_WIDTH / 2, 0, PIPE_WIDTH, 320);
+          ctx.restore();
+          ctx.drawImage(pipeImg, p.x, p.bottom, PIPE_WIDTH, 320);
+        });
+      }
+
       function checkCollision(bird) {
-        if (bird.y > BACKEND_HEIGHT || bird.y < 0) {
+        if (bird.y > BACKEND_HEIGHT - 50 - 12 || bird.y < 0) {
           bird.dead = true;
           return;
         }
@@ -233,42 +314,73 @@
         }
       }
 
-      function drawEntity(b) {
-        if (b.dead) return;
-        ctx.fillStyle = b.color;
-        ctx.beginPath();
-        ctx.arc(BIRD_X, b.y, 12, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.strokeStyle = "#ffffff";
-        ctx.lineWidth = 2;
-        ctx.stroke();
+      function drawUI() {
+        ctx.textAlign = "center";
+        ctx.lineJoin = "round";
+
+        if (gameState === "START") {
+          ctx.fillStyle = "white";
+          ctx.strokeStyle = "black";
+          ctx.lineWidth = 4;
+          ctx.font = "bold 30px sans-serif";
+          ctx.strokeText("TAP TO START", BACKEND_WIDTH / 2, 140);
+          ctx.fillText("TAP TO START", BACKEND_WIDTH / 2, 140);
+
+          ctx.fillStyle = "#64b5f6";
+          ctx.strokeStyle = "black";
+          ctx.lineWidth = 3;
+          ctx.font = "bold 16px sans-serif";
+          ctx.strokeText("Blue Bird = AI Bot", BACKEND_WIDTH / 2, 185);
+          ctx.fillText("Blue Bird = AI Bot", BACKEND_WIDTH / 2, 185);
+        } else if (gameState === "PLAYING") {
+          ctx.fillStyle = "white";
+          ctx.strokeStyle = "black";
+          ctx.lineWidth = 4;
+          ctx.font = "bold 40px sans-serif";
+          ctx.strokeText(score, BACKEND_WIDTH / 2, 80);
+          ctx.fillText(score, BACKEND_WIDTH / 2, 80);
+        } else if (gameState === "GAMEOVER") {
+          ctx.fillStyle = "white";
+          ctx.strokeStyle = "black";
+          ctx.lineWidth = 4;
+          ctx.font = "bold 40px sans-serif";
+          ctx.strokeText("GAME OVER", BACKEND_WIDTH / 2, 150);
+          ctx.fillText("GAME OVER", BACKEND_WIDTH / 2, 150);
+
+          ctx.font = "bold 24px sans-serif";
+          ctx.strokeText("Score: " + score, BACKEND_WIDTH / 2, 200);
+          ctx.fillText("Score: " + score, BACKEND_WIDTH / 2, 200);
+
+          ctx.font = "bold 20px sans-serif";
+          ctx.strokeText("Tap to Restart", BACKEND_WIDTH / 2, 250);
+          ctx.fillText("Tap to Restart", BACKEND_WIDTH / 2, 250);
+        }
       }
 
-      function drawPipes() {
-        ctx.fillStyle = "#73bf2e";
-        pipes.forEach((p) => {
-          // Render Upper Bar Segment
-          ctx.fillRect(p.x, 0, PIPE_WIDTH, p.top);
-          // Render Lower Bar Segment
-          ctx.fillRect(p.x, p.bottom, PIPE_WIDTH, BACKEND_HEIGHT - p.bottom);
-        });
-      }
-
-      // Global UI Input Management Action Rules
-      window.addEventListener("keydown", (e) => {
-        if (e.code === "Space" && !humanBird.dead) {
+      function handleInput() {
+        if (gameState === "START") {
+          gameState = "PLAYING";
           humanBird.velocity = FLAP_IMPULSE;
-          e.preventDefault(); // Mute browser viewport window scrolling actions
+        } else if (gameState === "PLAYING" && !humanBird.dead) {
+          humanBird.velocity = FLAP_IMPULSE;
+        } else if (gameState === "GAMEOVER") {
+          resetGame();
+          gameState = "START";
+        }
+      }
+
+      window.addEventListener("keydown", (e) => {
+        if (e.code === "Space") {
+          e.preventDefault();
+          handleInput();
         }
       });
       canvas.addEventListener("touchstart", (e) => {
-        if (!humanBird.dead) {
-          humanBird.velocity = FLAP_IMPULSE;
-          e.preventDefault();
-        }
+        e.preventDefault();
+        handleInput();
       });
+      canvas.addEventListener("mousedown", handleInput);
 
-      // Run Engine Setup
       initAI();
     </script>
   </body>
