@@ -54,10 +54,14 @@
       const ctx = canvas.getContext("2d");
       const loader = document.getElementById("loader");
 
+      // --- HARDWARE DETECTION ---
+      const isMobile = window.innerHeight > window.innerWidth;
+      const hasTouch = "ontouchstart" in window || navigator.maxTouchPoints > 0;
+      const ACTION_TEXT = hasTouch ? "TAP" : "SPACEBAR";
+
       // --- VIEWPORT DECOUPLING ---
       const BACKEND_WIDTH = 288;
       const GYM_HEIGHT = 512;
-      const isMobile = window.innerHeight > window.innerWidth;
       const VISUAL_HEIGHT = isMobile
         ? Math.max(
             GYM_HEIGHT,
@@ -71,13 +75,17 @@
       ctx.scale(RESOLUTION_SCALE, RESOLUTION_SCALE);
       ctx.imageSmoothingEnabled = false;
 
+      // --- ENGINE LOCKER (60 FPS FIXED TIME STEP) ---
+      const FPS = 60;
+      const fpsInterval = 1000 / FPS;
+      let lastTime = 0;
+      let isUpdating = false;
+
       // --- EXACT GYMNASIUM CONSTANTS ---
       const GRAVITY = 1.0;
       const FLAP_IMPULSE = -9.0;
       const MAX_VELOCITY = 10.0;
-      const MIN_VELOCITY = -8.0;
       const PIPE_SPEED = 4.0;
-      const PIPE_SPAWN_DIST = 144;
       const GAP_SIZE = 100;
       const PIPE_WIDTH = 52;
       const PIPE_HEIGHT = 320;
@@ -128,6 +136,7 @@
         flapped: false,
         dead: false
       };
+      let pipes = [];
 
       async function initAI() {
         try {
@@ -137,6 +146,8 @@
           loader.style.display = "none";
           gameState = "START";
           resetGame();
+          // Initialize the timer before starting the loop
+          lastTime = performance.now();
           requestAnimationFrame(gameLoop);
         } catch (e) {
           loader.innerText = "Error loading flappy_bird_packed.onnx";
@@ -175,160 +186,181 @@
         });
       }
 
-      async function gameLoop() {
-        ctx.clearRect(0, 0, BACKEND_WIDTH, VISUAL_HEIGHT);
-        ctx.drawImage(bgImg, 0, 0, BACKEND_WIDTH, GYM_HEIGHT);
+      // --- CORE EXECUTION LOOP (NOW FPS LOCKED) ---
+      async function gameLoop(currentTime) {
+        // Immediately queue the next frame
+        requestAnimationFrame(gameLoop);
 
-        if (gameState === "PLAYING") {
-          let anyAlive = !humanBird.dead || !aiBird.dead;
+        // Calculate time elapsed
+        let deltaTime = currentTime - lastTime;
 
-          [humanBird, aiBird].forEach((bird) => {
-            if (!bird.dead) {
-              if (bird.flapped) {
-                bird.velocity = FLAP_IMPULSE;
-                bird.flapped = false;
-                bird.rot = 45;
-              } else if (bird.velocity < MAX_VELOCITY) {
+        // Only update physics if 16.6ms (1/60th of a sec) has passed and we aren't already updating
+        if (deltaTime >= fpsInterval && !isUpdating) {
+          isUpdating = true;
+
+          // Adjust the tracker to maintain perfect 60FPS sync without drifting
+          lastTime = currentTime - (deltaTime % fpsInterval);
+
+          // -- START PHYSICS UPDATE --
+          ctx.clearRect(0, 0, BACKEND_WIDTH, VISUAL_HEIGHT);
+          ctx.drawImage(bgImg, 0, 0, BACKEND_WIDTH, GYM_HEIGHT);
+
+          if (gameState === "PLAYING") {
+            let anyAlive = !humanBird.dead || !aiBird.dead;
+
+            [humanBird, aiBird].forEach((bird) => {
+              if (!bird.dead) {
+                if (bird.flapped) {
+                  bird.velocity = FLAP_IMPULSE;
+                  bird.flapped = false;
+                  bird.rot = 45;
+                } else if (bird.velocity < MAX_VELOCITY) {
+                  bird.velocity += GRAVITY;
+                }
+                if (bird.rot > -90) bird.rot -= 3;
+
+                bird.y += bird.velocity;
+                checkCollision(bird);
+              } else if (bird.y < GYM_HEIGHT * 0.79 - PLAYER_HEIGHT) {
                 bird.velocity += GRAVITY;
-              }
-
-              if (bird.rot > -90) bird.rot -= 3;
-
-              bird.y += bird.velocity;
-              checkCollision(bird);
-            } else if (bird.y < GYM_HEIGHT * 0.79 - PLAYER_HEIGHT) {
-              bird.velocity += GRAVITY;
-              if (bird.velocity > MAX_VELOCITY) bird.velocity = MAX_VELOCITY;
-              bird.y += bird.velocity;
-              if (bird.rot > -90) bird.rot -= 3;
-              if (bird.y > GYM_HEIGHT * 0.79 - PLAYER_HEIGHT)
-                bird.y = GYM_HEIGHT * 0.79 - PLAYER_HEIGHT;
-            }
-          });
-
-          if (anyAlive) {
-            pipes.forEach((p) => {
-              p.x -= PIPE_SPEED;
-
-              // Track score crossing independently for the human
-              if (
-                !p.humanPassed &&
-                !humanBird.dead &&
-                p.x + PIPE_WIDTH < BIRD_X + PLAYER_WIDTH / 2
-              ) {
-                p.humanPassed = true;
-                humanScore++;
-              }
-              // Track score crossing independently for the AI
-              if (
-                !p.aiPassed &&
-                !aiBird.dead &&
-                p.x + PIPE_WIDTH < BIRD_X + PLAYER_WIDTH / 2
-              ) {
-                p.aiPassed = true;
-                aiScore++;
+                if (bird.velocity > MAX_VELOCITY) bird.velocity = MAX_VELOCITY;
+                bird.y += bird.velocity;
+                if (bird.rot > -90) bird.rot -= 3;
+                if (bird.y > GYM_HEIGHT * 0.79 - PLAYER_HEIGHT)
+                  bird.y = GYM_HEIGHT * 0.79 - PLAYER_HEIGHT;
               }
             });
 
-            for (let i = 0; i < pipes.length; i++) {
-              if (pipes[i].x < -PIPE_WIDTH) {
-                let gap_y = Math.floor(Math.random() * 8) * 10 + 20;
-                gap_y += Math.floor(GYM_HEIGHT * 0.79 * 0.2);
+            if (anyAlive) {
+              pipes.forEach((p) => {
+                p.x -= PIPE_SPEED;
 
-                pipes[i].x = BACKEND_WIDTH + PIPE_WIDTH + BACKEND_WIDTH * 0.2;
-                pipes[i].top = gap_y;
-                pipes[i].bottom = gap_y + GAP_SIZE;
-                pipes[i].humanPassed = false;
-                pipes[i].aiPassed = false;
-              }
-            }
-
-            gameFrame++;
-
-            if (!aiBird.dead && session) {
-              let obsPipes = pipes.map((p) => {
-                if (p.x > BACKEND_WIDTH) {
-                  return { x: BACKEND_WIDTH, top: 0, bottom: GYM_HEIGHT };
-                } else {
-                  return { x: p.x, top: p.top, bottom: p.bottom };
+                if (
+                  !p.humanPassed &&
+                  !humanBird.dead &&
+                  p.x + PIPE_WIDTH < BIRD_X + PLAYER_WIDTH / 2
+                ) {
+                  p.humanPassed = true;
+                  humanScore++;
+                }
+                if (
+                  !p.aiPassed &&
+                  !aiBird.dead &&
+                  p.x + PIPE_WIDTH < BIRD_X + PLAYER_WIDTH / 2
+                ) {
+                  p.aiPassed = true;
+                  aiScore++;
                 }
               });
 
-              obsPipes.sort((a, b) => a.x - b.x);
+              for (let i = 0; i < pipes.length; i++) {
+                if (pipes[i].x < -PIPE_WIDTH) {
+                  let gap_y = Math.floor(Math.random() * 8) * 10 + 20;
+                  gap_y += Math.floor(GYM_HEIGHT * 0.79 * 0.2);
 
-              let state12D = [
-                obsPipes[0].x / BACKEND_WIDTH,
-                obsPipes[0].top / GYM_HEIGHT,
-                obsPipes[0].bottom / GYM_HEIGHT,
-                obsPipes[1].x / BACKEND_WIDTH,
-                obsPipes[1].top / GYM_HEIGHT,
-                obsPipes[1].bottom / GYM_HEIGHT,
-                obsPipes[2].x / BACKEND_WIDTH,
-                obsPipes[2].top / GYM_HEIGHT,
-                obsPipes[2].bottom / GYM_HEIGHT,
-                aiBird.y / GYM_HEIGHT,
-                aiBird.velocity / MAX_VELOCITY,
-                aiBird.rot / 90.0
-              ];
+                  pipes[i].x = BACKEND_WIDTH + PIPE_WIDTH + BACKEND_WIDTH * 0.2;
+                  pipes[i].top = gap_y;
+                  pipes[i].bottom = gap_y + GAP_SIZE;
+                  pipes[i].humanPassed = false;
+                  pipes[i].aiPassed = false;
+                }
+              }
 
-              const inputTensor = new ort.Tensor(
-                "float32",
-                Float32Array.from(state12D),
-                [1, 12]
-              );
-              const outputMap = await session.run({ input: inputTensor });
-              const qValues = outputMap.output.data;
+              gameFrame++;
 
-              if (qValues[1] > qValues[0]) {
-                aiBird.flapped = true;
+              if (!aiBird.dead && session) {
+                let obsPipes = pipes.map((p) => {
+                  if (p.x > BACKEND_WIDTH) {
+                    return { x: BACKEND_WIDTH, top: 0, bottom: GYM_HEIGHT };
+                  } else {
+                    return { x: p.x, top: p.top, bottom: p.bottom };
+                  }
+                });
+
+                obsPipes.sort((a, b) => a.x - b.x);
+
+                let state12D = [
+                  obsPipes[0].x / BACKEND_WIDTH,
+                  obsPipes[0].top / GYM_HEIGHT,
+                  obsPipes[0].bottom / GYM_HEIGHT,
+                  obsPipes[1].x / BACKEND_WIDTH,
+                  obsPipes[1].top / GYM_HEIGHT,
+                  obsPipes[1].bottom / GYM_HEIGHT,
+                  obsPipes[2].x / BACKEND_WIDTH,
+                  obsPipes[2].top / GYM_HEIGHT,
+                  obsPipes[2].bottom / GYM_HEIGHT,
+                  aiBird.y / GYM_HEIGHT,
+                  aiBird.velocity / MAX_VELOCITY,
+                  aiBird.rot / 90.0
+                ];
+
+                const inputTensor = new ort.Tensor(
+                  "float32",
+                  Float32Array.from(state12D),
+                  [1, 12]
+                );
+                const outputMap = await session.run({ input: inputTensor });
+
+                if (outputMap.output.data[1] > outputMap.output.data[0]) {
+                  aiBird.flapped = true;
+                }
               }
             }
           }
+
+          drawPipes();
+
+          let anyAlive = !humanBird.dead || !aiBird.dead;
+          let baseOffset =
+            gameState === "PLAYING" && anyAlive
+              ? -(gameFrame * PIPE_SPEED) % 24
+              : 0;
+
+          for (let y = GYM_HEIGHT * 0.79; y < VISUAL_HEIGHT + 112; y += 112) {
+            ctx.drawImage(baseImg, baseOffset, y, BACKEND_WIDTH + 24, 112);
+          }
+
+          let hoverY =
+            gameState === "START" ? Math.sin(gameFrame * 0.1) * 6 : 0;
+          let flapIndex = Math.floor(gameFrame / 5) % 4;
+
+          if (aiBird.y < GYM_HEIGHT * 0.79 - PLAYER_HEIGHT || !aiBird.dead) {
+            let f =
+              aiBird.dead || (gameState !== "PLAYING" && gameState !== "START")
+                ? 1
+                : flapIndex;
+            ctx.globalAlpha = 0.5;
+            drawSprite(
+              blueBirdFrames[f],
+              BIRD_X,
+              aiBird.y + hoverY,
+              aiBird.rot
+            );
+            ctx.globalAlpha = 1.0;
+          }
+
+          if (
+            humanBird.y < GYM_HEIGHT * 0.79 - PLAYER_HEIGHT ||
+            !humanBird.dead
+          ) {
+            let f =
+              humanBird.dead ||
+              (gameState !== "PLAYING" && gameState !== "START")
+                ? 1
+                : flapIndex;
+            drawSprite(
+              yellowBirdFrames[f],
+              BIRD_X,
+              humanBird.y + hoverY,
+              humanBird.rot
+            );
+          }
+
+          drawUI();
+          // -- END PHYSICS UPDATE --
+
+          isUpdating = false;
         }
-
-        drawPipes();
-
-        let anyAlive = !humanBird.dead || !aiBird.dead;
-        let baseOffset =
-          gameState === "PLAYING" && anyAlive
-            ? -(gameFrame * PIPE_SPEED) % 24
-            : 0;
-
-        for (let y = GYM_HEIGHT * 0.79; y < VISUAL_HEIGHT + 112; y += 112) {
-          ctx.drawImage(baseImg, baseOffset, y, BACKEND_WIDTH + 24, 112);
-        }
-
-        let hoverY = gameState === "START" ? Math.sin(gameFrame * 0.1) * 6 : 0;
-        let flapIndex = Math.floor(gameFrame / 5) % 4;
-
-        if (aiBird.y < GYM_HEIGHT * 0.79 - PLAYER_HEIGHT || !aiBird.dead) {
-          let f =
-            aiBird.dead || (gameState !== "PLAYING" && gameState !== "START")
-              ? 1
-              : flapIndex;
-          ctx.globalAlpha = 0.5;
-          drawSprite(blueBirdFrames[f], BIRD_X, aiBird.y + hoverY, aiBird.rot);
-          ctx.globalAlpha = 1.0;
-        }
-
-        if (
-          humanBird.y < GYM_HEIGHT * 0.79 - PLAYER_HEIGHT ||
-          !humanBird.dead
-        ) {
-          let f =
-            humanBird.dead || (gameState !== "PLAYING" && gameState !== "START")
-              ? 1
-              : flapIndex;
-          drawSprite(
-            yellowBirdFrames[f],
-            BIRD_X,
-            humanBird.y + hoverY,
-            humanBird.rot
-          );
-        }
-
-        drawUI();
-        requestAnimationFrame(gameLoop);
       }
 
       function drawSprite(img, x, y, rot) {
@@ -415,8 +447,8 @@
           ctx.strokeStyle = "black";
           ctx.lineWidth = 4;
           ctx.font = "bold 30px sans-serif";
-          ctx.strokeText("TAP TO START", BACKEND_WIDTH / 2, 140);
-          ctx.fillText("TAP TO START", BACKEND_WIDTH / 2, 140);
+          ctx.strokeText(`${ACTION_TEXT} TO START`, BACKEND_WIDTH / 2, 140);
+          ctx.fillText(`${ACTION_TEXT} TO START`, BACKEND_WIDTH / 2, 140);
 
           ctx.fillStyle = "#64b5f6";
           ctx.lineWidth = 3;
@@ -426,28 +458,36 @@
         } else if (gameState === "PLAYING") {
           ctx.strokeStyle = "black";
           ctx.lineWidth = 4;
-          ctx.font = "bold 36px sans-serif";
 
-          // Render Split Scoreboard Layout side-by-side
-          // Human (Left side in Yellow)
-          ctx.fillStyle = "#ffeb3b";
-          ctx.strokeText(humanScore, BACKEND_WIDTH / 3, 70);
-          ctx.fillText(humanScore, BACKEND_WIDTH / 3, 70);
-
-          // AI Bot (Right side in Blue)
-          ctx.fillStyle = "#64b5f6";
-          ctx.strokeText(aiScore, (BACKEND_WIDTH / 3) * 2, 70);
-          ctx.fillText(aiScore, (BACKEND_WIDTH / 3) * 2, 70);
-
+          // --- ONLY DRAW BOTH SCORES IF HUMAN IS DEAD ---
           if (humanBird.dead) {
+            ctx.font = "bold 36px sans-serif";
+
+            // Human (Left side in Yellow)
+            ctx.fillStyle = "#ffeb3b";
+            ctx.strokeText(humanScore, BACKEND_WIDTH / 3, 70);
+            ctx.fillText(humanScore, BACKEND_WIDTH / 3, 70);
+
+            // AI Bot (Right side in Blue)
+            ctx.fillStyle = "#64b5f6";
+            ctx.strokeText(aiScore, (BACKEND_WIDTH / 3) * 2, 70);
+            ctx.fillText(aiScore, (BACKEND_WIDTH / 3) * 2, 70);
+
             ctx.fillStyle = "white";
             ctx.font = "bold 40px sans-serif";
             ctx.strokeText("GAME OVER", BACKEND_WIDTH / 2, 180);
             ctx.fillText("GAME OVER", BACKEND_WIDTH / 2, 180);
 
             ctx.font = "bold 20px sans-serif";
-            ctx.strokeText("Tap to Restart", BACKEND_WIDTH / 2, 230);
-            ctx.fillText("Tap to Restart", BACKEND_WIDTH / 2, 230);
+            // Dynamically update text instructions based on device
+            ctx.strokeText(`${ACTION_TEXT} TO RESTART`, BACKEND_WIDTH / 2, 230);
+            ctx.fillText(`${ACTION_TEXT} TO RESTART`, BACKEND_WIDTH / 2, 230);
+          } else {
+            // --- HUMAN STILL ALIVE: DRAW SINGLE SCORE CENTERED ---
+            ctx.fillStyle = "white";
+            ctx.font = "bold 40px sans-serif";
+            ctx.strokeText(humanScore, BACKEND_WIDTH / 2, 80);
+            ctx.fillText(humanScore, BACKEND_WIDTH / 2, 80);
           }
         }
       }
