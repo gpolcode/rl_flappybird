@@ -15,21 +15,21 @@
         padding: 0;
         width: 100%;
         height: 100%;
-        background: #4ec0ca; /* Matches the sky to hide mobile over-scroll smoothly */
+        background: #4ec0ca;
         display: flex;
         justify-content: center;
-        align-items: center; /* Centers the game on desktop */
+        align-items: center;
         overflow: hidden;
         font-family: "Courier New", Courier, monospace;
       }
 
       canvas {
         display: block;
-        height: 100vh; /* Fill the screen vertically */
-        width: auto; /* Scale width proportionally */
-        max-width: 100vw; /* Prevent horizontal overflow on extremely thin devices */
+        height: 100vh;
+        width: auto;
+        max-width: 100vw;
         image-rendering: pixelated;
-        box-shadow: 0 0 30px rgba(0, 0, 0, 0.4); /* Arcade cabinet border effect for desktop */
+        box-shadow: 0 0 30px rgba(0, 0, 0, 0.4);
       }
 
       #loader {
@@ -54,13 +54,10 @@
       const ctx = canvas.getContext("2d");
       const loader = document.getElementById("loader");
 
-      // --- VIEWPORT DECOUPLING (THE FIX) ---
+      // --- VIEWPORT DECOUPLING ---
       const BACKEND_WIDTH = 288;
-      const GYM_HEIGHT = 512; // Strictly preserved for ONNX State Inputs and Physics Collision
-
-      // Check if device is portrait (Mobile) or landscape (Desktop)
+      const GYM_HEIGHT = 512;
       const isMobile = window.innerHeight > window.innerWidth;
-      // Extend the visual canvas height on mobile to fill the screen, lock to 512 on desktop
       const VISUAL_HEIGHT = isMobile
         ? Math.max(
             GYM_HEIGHT,
@@ -74,15 +71,17 @@
       ctx.scale(RESOLUTION_SCALE, RESOLUTION_SCALE);
       ctx.imageSmoothingEnabled = false;
 
-      // --- EXACT GYMNASIUM PHYSICS CONSTANTS ---
+      // --- EXACT GYMNASIUM CONSTANTS ---
       const GRAVITY = 1.0;
       const FLAP_IMPULSE = -9.0;
       const MAX_VELOCITY = 10.0;
       const MIN_VELOCITY = -8.0;
       const PIPE_SPEED = 4.0;
-      const PIPE_SPAWN_DIST = 144;
       const GAP_SIZE = 100;
       const PIPE_WIDTH = 52;
+      const PIPE_HEIGHT = 320;
+      const PLAYER_WIDTH = 34;
+      const PLAYER_HEIGHT = 24;
       const BIRD_X = 57;
 
       // --- ASSET LOADING ---
@@ -112,8 +111,20 @@
       let pipes = [];
       let gameState = "LOADING";
 
-      let humanBird = { y: 240, velocity: 0, dead: false };
-      let aiBird = { y: 240, velocity: 0, dead: false };
+      let humanBird = {
+        y: 244,
+        velocity: -9,
+        rot: 45,
+        flapped: false,
+        dead: false
+      };
+      let aiBird = {
+        y: 244,
+        velocity: -9,
+        rot: 45,
+        flapped: false,
+        dead: false
+      };
 
       async function initAI() {
         try {
@@ -126,31 +137,42 @@
           requestAnimationFrame(gameLoop);
         } catch (e) {
           loader.innerText = "Error loading flappy_bird_packed.onnx";
-          console.error("ONNX Runtime Error:", e);
+          console.error(e);
         }
       }
 
       function resetGame() {
         score = 0;
         pipes = [];
-        humanBird = { y: 240, velocity: 0, dead: false };
-        aiBird = { y: 240, velocity: 0, dead: false };
-        spawnPipePair(BACKEND_WIDTH + 100);
+        humanBird = {
+          y: 244,
+          velocity: -9,
+          rot: 45,
+          flapped: false,
+          dead: false
+        };
+        aiBird = { y: 244, velocity: -9, rot: 45, flapped: false, dead: false };
+
+        // Gym initializes exactly 3 pipes spaced evenly by 144px starting at the screen edge
+        spawnPipePair(BACKEND_WIDTH);
+        spawnPipePair(BACKEND_WIDTH + BACKEND_WIDTH / 2);
+        spawnPipePair(BACKEND_WIDTH + BACKEND_WIDTH);
       }
 
       function spawnPipePair(startX) {
-        let topHeight = Math.random() * (GYM_HEIGHT - GAP_SIZE - 160) + 60;
+        let gap_y = Math.floor(Math.random() * 8) * 10 + 20;
+        gap_y += Math.floor(GYM_HEIGHT * 0.79 * 0.2); // Base offset calculation (80)
+
         pipes.push({
           x: startX,
-          top: topHeight,
-          bottom: topHeight + GAP_SIZE,
+          top: gap_y,
+          bottom: gap_y + GAP_SIZE,
           passed: false
         });
       }
 
       async function gameLoop() {
         ctx.clearRect(0, 0, BACKEND_WIDTH, VISUAL_HEIGHT);
-        // Draw sky anchored to the top
         ctx.drawImage(bgImg, 0, 0, BACKEND_WIDTH, GYM_HEIGHT);
 
         if (gameState === "PLAYING") {
@@ -158,74 +180,81 @@
 
           [humanBird, aiBird].forEach((bird) => {
             if (!bird.dead) {
-              bird.velocity += GRAVITY;
-              if (bird.velocity > MAX_VELOCITY) bird.velocity = MAX_VELOCITY;
-              if (bird.velocity < MIN_VELOCITY) bird.velocity = MIN_VELOCITY;
+              if (bird.flapped) {
+                bird.velocity = FLAP_IMPULSE;
+                bird.flapped = false;
+                bird.rot = 45;
+              } else if (bird.velocity < MAX_VELOCITY) {
+                bird.velocity += GRAVITY;
+              }
+
+              if (bird.rot > -90) bird.rot -= 3; // PLAYER_VEL_ROT = 3
+
               bird.y += bird.velocity;
               checkCollision(bird);
-            } else if (bird.y < GYM_HEIGHT - 50 - 12) {
+            } else if (bird.y < GYM_HEIGHT * 0.79 - PLAYER_HEIGHT) {
+              // Rapidly fall to the floor when dead
               bird.velocity += GRAVITY;
               if (bird.velocity > MAX_VELOCITY) bird.velocity = MAX_VELOCITY;
               bird.y += bird.velocity;
-              if (bird.y > GYM_HEIGHT - 50 - 12) bird.y = GYM_HEIGHT - 50 - 12;
+              if (bird.rot > -90) bird.rot -= 3;
+              if (bird.y > GYM_HEIGHT * 0.79 - PLAYER_HEIGHT)
+                bird.y = GYM_HEIGHT * 0.79 - PLAYER_HEIGHT;
             }
           });
 
           if (anyAlive) {
             pipes.forEach((p) => {
               p.x -= PIPE_SPEED;
-              if (!p.passed && p.x + PIPE_WIDTH < BIRD_X) {
+              if (!p.passed && p.x + PIPE_WIDTH < BIRD_X + PLAYER_WIDTH / 2) {
                 p.passed = true;
                 score++;
               }
             });
 
-            if (pipes.length > 0 && pipes[0].x < -PIPE_WIDTH) {
-              pipes.shift();
-            }
+            // Keep array capped at exactly 3 pipes, recycling out-of-bounds instances to the back
+            for (let i = 0; i < pipes.length; i++) {
+              if (pipes[i].x < -PIPE_WIDTH) {
+                let gap_y = Math.floor(Math.random() * 8) * 10 + 20;
+                gap_y += Math.floor(GYM_HEIGHT * 0.79 * 0.2);
 
-            if (pipes.length > 0) {
-              let lastPipe = pipes[pipes.length - 1];
-              if (lastPipe.x < BACKEND_WIDTH) {
-                spawnPipePair(lastPipe.x + PIPE_SPAWN_DIST);
+                pipes[i].x = BACKEND_WIDTH + PIPE_WIDTH + BACKEND_WIDTH * 0.2; // Exactly 397px
+                pipes[i].top = gap_y;
+                pipes[i].bottom = gap_y + GAP_SIZE;
+                pipes[i].passed = false;
               }
             }
 
             gameFrame++;
 
+            // --- 1:1 REPLICATED INFERENCE ENGINE ---
             if (!aiBird.dead && session) {
-              let pastPipes = pipes.filter((p) => p.x + PIPE_WIDTH <= BIRD_X);
-              let futurePipes = pipes.filter((p) => p.x + PIPE_WIDTH > BIRD_X);
+              // Map out array objects while matching Gym's off-screen masking rules
+              let obsPipes = pipes.map((p) => {
+                if (p.x > BACKEND_WIDTH) {
+                  return { x: BACKEND_WIDTH, top: 0, bottom: GYM_HEIGHT };
+                } else {
+                  return { x: p.x, top: p.top, bottom: p.bottom };
+                }
+              });
 
-              let lastP = pastPipes[pastPipes.length - 1] || {
-                x: -200,
-                top: 0,
-                bottom: GYM_HEIGHT
-              };
-              let nextP = futurePipes[0] || {
-                x: BACKEND_WIDTH,
-                top: 0,
-                bottom: GYM_HEIGHT
-              };
-              let next2P = futurePipes[1] || {
-                x: BACKEND_WIDTH + 200,
-                top: 0,
-                bottom: GYM_HEIGHT
-              };
+              // Sort purely by X coordinate from left to right
+              obsPipes.sort((a, b) => a.x - b.x);
 
+              // Build the normalized 12-dimensional vector matching Gym arrays exactly
               let state12D = [
-                lastP.x,
-                lastP.top,
-                lastP.bottom,
-                nextP.x,
-                nextP.top,
-                nextP.bottom,
-                next2P.x,
-                next2P.top,
-                next2P.bottom,
-                aiBird.y,
-                aiBird.velocity,
-                0.0
+                obsPipes[0].x / BACKEND_WIDTH,
+                obsPipes[0].top / GYM_HEIGHT,
+                obsPipes[0].bottom / GYM_HEIGHT,
+                obsPipes[1].x / BACKEND_WIDTH,
+                obsPipes[1].top / GYM_HEIGHT,
+                obsPipes[1].bottom / GYM_HEIGHT,
+                obsPipes[2].x / BACKEND_WIDTH,
+                obsPipes[2].top / GYM_HEIGHT,
+                obsPipes[2].bottom / GYM_HEIGHT,
+                aiBird.y / GYM_HEIGHT,
+                aiBird.velocity / MAX_VELOCITY,
+                aiBird.rot / 90.0
               ];
 
               const inputTensor = new ort.Tensor(
@@ -237,7 +266,7 @@
               const qValues = outputMap.output.data;
 
               if (qValues[1] > qValues[0]) {
-                aiBird.velocity = FLAP_IMPULSE;
+                aiBird.flapped = true;
               }
             }
           }
@@ -251,30 +280,27 @@
             ? -(gameFrame * PIPE_SPEED) % 24
             : 0;
 
-        // Draw the primary collision floor where physics expect it, then tile downwards for tall screens
-        for (let y = GYM_HEIGHT - 50; y < VISUAL_HEIGHT + 112; y += 112) {
+        for (let y = GYM_HEIGHT * 0.79; y < VISUAL_HEIGHT + 112; y += 112) {
           ctx.drawImage(baseImg, baseOffset, y, BACKEND_WIDTH + 24, 112);
         }
 
         let hoverY = gameState === "START" ? Math.sin(gameFrame * 0.1) * 6 : 0;
         let flapIndex = Math.floor(gameFrame / 5) % 4;
 
-        if (aiBird.y < GYM_HEIGHT - 50 - 12 || !aiBird.dead) {
+        if (aiBird.y < GYM_HEIGHT * 0.79 - PLAYER_HEIGHT || !aiBird.dead) {
           let f =
             aiBird.dead || (gameState !== "PLAYING" && gameState !== "START")
               ? 1
               : flapIndex;
           ctx.globalAlpha = 0.5;
-          drawSprite(
-            blueBirdFrames[f],
-            BIRD_X,
-            aiBird.y + hoverY,
-            aiBird.velocity
-          );
+          drawSprite(blueBirdFrames[f], BIRD_X, aiBird.y + hoverY, aiBird.rot);
           ctx.globalAlpha = 1.0;
         }
 
-        if (humanBird.y < GYM_HEIGHT - 50 - 12 || !humanBird.dead) {
+        if (
+          humanBird.y < GYM_HEIGHT * 0.79 - PLAYER_HEIGHT ||
+          !humanBird.dead
+        ) {
           let f =
             humanBird.dead || (gameState !== "PLAYING" && gameState !== "START")
               ? 1
@@ -283,7 +309,7 @@
             yellowBirdFrames[f],
             BIRD_X,
             humanBird.y + hoverY,
-            humanBird.velocity
+            humanBird.rot
           );
         }
 
@@ -291,39 +317,86 @@
         requestAnimationFrame(gameLoop);
       }
 
-      function drawSprite(img, x, y, velocity) {
+      function drawSprite(img, x, y, rot) {
         ctx.save();
-        ctx.translate(x, y);
-        let rotation =
-          gameState === "START"
-            ? 0
-            : Math.min(Math.PI / 4, Math.max(-Math.PI / 4, velocity * 0.1));
-        ctx.rotate(rotation);
-        ctx.drawImage(img, -17, -12, 34, 24);
+        ctx.translate(x + PLAYER_WIDTH / 2, y + PLAYER_HEIGHT / 2);
+        // Apply visual rotation clamp rule from Pygame rendering script
+        let visible_rot = rot > 20 ? 20 : rot;
+        let rad = gameState === "START" ? 0 : -((visible_rot * Math.PI) / 180);
+        ctx.rotate(rad);
+        ctx.drawImage(
+          img,
+          -PLAYER_WIDTH / 2,
+          -PLAYER_HEIGHT / 2,
+          PLAYER_WIDTH,
+          PLAYER_HEIGHT
+        );
         ctx.restore();
       }
 
       function drawPipes() {
         pipes.forEach((p) => {
+          // --- Upper Pipe (Flipped with End Cap facing down) ---
           ctx.save();
-          ctx.translate(p.x + PIPE_WIDTH / 2, p.top);
+          // Move origin to the bottom edge of the upper pipe
+          ctx.translate(p.x, p.top);
+          // Flip vertically along the Y-axis
           ctx.scale(1, -1);
-          ctx.drawImage(pipeImg, -PIPE_WIDTH / 2, 0, PIPE_WIDTH, 320);
+          // Draw the pipe extending upwards into the sky
+          ctx.drawImage(pipeImg, 0, 0, PIPE_WIDTH, PIPE_HEIGHT);
           ctx.restore();
-          ctx.drawImage(pipeImg, p.x, p.bottom, PIPE_WIDTH, 320);
+
+          // --- Lower Pipe (Standard facing up) ---
+          ctx.drawImage(pipeImg, p.x, p.bottom, PIPE_WIDTH, PIPE_HEIGHT);
         });
       }
 
       function checkCollision(bird) {
-        if (bird.y > GYM_HEIGHT - 50 - 12 || bird.y < 0) {
+        // Floor boundary check: self._player_y + PLAYER_HEIGHT >= self._ground["y"] - 1
+        if (bird.y + PLAYER_HEIGHT >= GYM_HEIGHT * 0.79 - 1) {
           bird.dead = true;
           return;
         }
+
+        // Strict AABB Rectangle Collision Matching Pygame Rects 1-to-1
+        let birdBox = {
+          left: BIRD_X,
+          right: BIRD_X + PLAYER_WIDTH,
+          top: bird.y,
+          bottom: bird.y + PLAYER_HEIGHT
+        };
+
         for (let p of pipes) {
-          if (p.x < BIRD_X + 12 && p.x + PIPE_WIDTH > BIRD_X - 12) {
-            if (bird.y - 12 < p.top || bird.y + 12 > p.bottom) {
-              bird.dead = true;
-            }
+          let upBox = {
+            left: p.x,
+            right: p.x + PIPE_WIDTH,
+            top: p.top - PIPE_HEIGHT,
+            bottom: p.top
+          };
+          let lowBox = {
+            left: p.x,
+            right: p.x + PIPE_WIDTH,
+            top: p.bottom,
+            bottom: p.bottom + PIPE_HEIGHT
+          };
+
+          if (
+            birdBox.right > upBox.left &&
+            birdBox.left < upBox.right &&
+            birdBox.bottom > upBox.top &&
+            birdBox.top < upBox.bottom
+          ) {
+            bird.dead = true;
+            return;
+          }
+          if (
+            birdBox.right > lowBox.left &&
+            birdBox.left < lowBox.right &&
+            birdBox.bottom > lowBox.top &&
+            birdBox.top < lowBox.bottom
+          ) {
+            bird.dead = true;
+            return;
           }
         }
       }
@@ -368,10 +441,10 @@
       function handleInput() {
         if (gameState === "START") {
           gameState = "PLAYING";
-          humanBird.velocity = FLAP_IMPULSE;
+          humanBird.flapped = true;
         } else if (gameState === "PLAYING") {
           if (!humanBird.dead) {
-            humanBird.velocity = FLAP_IMPULSE;
+            humanBird.flapped = true;
           } else {
             resetGame();
             gameState = "START";
